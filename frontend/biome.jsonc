@@ -1,0 +1,133 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  // app.css holds Tailwind 4 directives Biome does not parse; routeTree.gen.ts
+  // and src/shared/api are generated and never edited by hand.
+  "files": {
+    "includes": ["src/**", "*.ts", "*.json", "!src/app/app.css", "!src/routeTree.gen.ts", "!src/shared/api"]
+  },
+  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      "correctness": { "useExhaustiveDependencies": "error", "useHookAtTopLevel": "error" },
+      "nursery": { "useSortedClasses": { "level": "warn", "options": { "functions": ["cn", "cva"] } } },
+      "style": { "noNonNullAssertion": "error" },
+      "suspicious": { "noExplicitAny": "error" }
+    }
+  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "javascript": { "formatter": { "quoteStyle": "double" } },
+  "overrides": [
+    // Layer order is a machine check: a layer sees only the layers below it,
+    // and a slice is entered through its index.ts.
+    {
+      "includes": ["src/routes/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@/app/**"],
+                    "message": "routes may use pages, features, entities and shared."
+                  },
+                  {
+                    "group": ["@/pages/*/**", "@/features/*/**", "@/entities/*/**"],
+                    "message": "Import a slice through its index.ts."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/pages/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@/app/**", "@/routes/**"],
+                    "message": "pages may use features, entities and shared."
+                  },
+                  {
+                    "group": ["@/features/*/**", "@/entities/*/**"],
+                    "message": "Import a slice through its index.ts."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/features/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@/app/**", "@/routes/**", "@/pages/**", "@/features/**"],
+                    "message": "features may use entities and shared; inside a slice use relative paths."
+                  },
+                  { "group": ["@/entities/*/**"], "message": "Import a slice through its index.ts." }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/entities/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@/app/**", "@/routes/**", "@/pages/**", "@/features/**", "@/entities/**"],
+                    "message": "entities may use only shared; inside a slice use relative paths."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/shared/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@/app/**", "@/routes/**", "@/pages/**", "@/features/**", "@/entities/**"],
+                    "message": "shared knows nothing about the layers above it."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

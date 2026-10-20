@@ -43,6 +43,23 @@ jobs:
       - run: uv run mypy proofpay
       - run: uv run pytest --cov=proofpay
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+
   leaks:
     runs-on: ubuntu-latest
     steps:

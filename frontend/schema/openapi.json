@@ -1,0 +1,1373 @@
+{
+  "components": {
+    "schemas": {
+      "ApproveLink": {
+        "properties": {
+          "approve_url": {
+            "description": "PayPal page where the funder approves",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approve_url"
+        ],
+        "title": "ApproveLink",
+        "type": "object"
+      },
+      "BountyCard": {
+        "properties": {
+          "amount_usd": {
+            "description": "Reward in USD with two decimals",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "When the bounty was created",
+            "format": "date-time",
+            "type": "string"
+          },
+          "criteria": {
+            "description": "Acceptance criteria",
+            "items": {
+              "$ref": "#/components/schemas/Criterion"
+            },
+            "type": "array"
+          },
+          "done_when": {
+            "description": "The funder's 'done when' statement",
+            "type": "string"
+          },
+          "id": {
+            "description": "Bounty id",
+            "format": "uuid",
+            "type": "string"
+          },
+          "issue_number": {
+            "description": "Issue number in the repository",
+            "type": "integer"
+          },
+          "issue_url": {
+            "description": "GitHub issue the bounty is on",
+            "type": "string"
+          },
+          "repo_name": {
+            "description": "Name of the GitHub repository",
+            "type": "string"
+          },
+          "repo_owner": {
+            "description": "Owner of the GitHub repository",
+            "type": "string"
+          },
+          "status": {
+            "description": "Lifecycle status of the bounty",
+            "enum": [
+              "draft",
+              "awaiting_payment",
+              "funded",
+              "in_review",
+              "needs_human",
+              "released",
+              "paid",
+              "cancelled",
+              "expired"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "description": "Issue title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_usd",
+          "created_at",
+          "criteria",
+          "done_when",
+          "id",
+          "issue_number",
+          "issue_url",
+          "repo_name",
+          "repo_owner",
+          "status",
+          "title"
+        ],
+        "title": "BountyCard",
+        "type": "object"
+      },
+      "BountyEvent": {
+        "properties": {
+          "at": {
+            "description": "When it happened",
+            "format": "date-time",
+            "type": "string"
+          },
+          "detail": {
+            "additionalProperties": {},
+            "description": "Event data; never contains secrets",
+            "type": "object"
+          },
+          "kind": {
+            "description": "Kind of event, e.g. funded, verdict, paid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "detail",
+          "kind"
+        ],
+        "title": "BountyEvent",
+        "type": "object"
+      },
+      "BountyPage": {
+        "description": "The new draft bounty",
+        "properties": {
+          "amount_usd": {
+            "description": "Reward in USD with two decimals",
+            "type": "string"
+          },
+          "claims": {
+            "description": "Claims, oldest first",
+            "items": {
+              "$ref": "#/components/schemas/ClaimView"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "description": "When the bounty was created",
+            "format": "date-time",
+            "type": "string"
+          },
+          "criteria": {
+            "description": "Acceptance criteria",
+            "items": {
+              "$ref": "#/components/schemas/Criterion"
+            },
+            "type": "array"
+          },
+          "done_when": {
+            "description": "The funder's 'done when' statement",
+            "type": "string"
+          },
+          "events": {
+            "description": "Audit log, oldest first",
+            "items": {
+              "$ref": "#/components/schemas/BountyEvent"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Bounty id",
+            "format": "uuid",
+            "type": "string"
+          },
+          "issue_number": {
+            "description": "Issue number in the repository",
+            "type": "integer"
+          },
+          "issue_url": {
+            "description": "GitHub issue the bounty is on",
+            "type": "string"
+          },
+          "repo_name": {
+            "description": "Name of the GitHub repository",
+            "type": "string"
+          },
+          "repo_owner": {
+            "description": "Owner of the GitHub repository",
+            "type": "string"
+          },
+          "status": {
+            "description": "Lifecycle status of the bounty",
+            "enum": [
+              "draft",
+              "awaiting_payment",
+              "funded",
+              "in_review",
+              "needs_human",
+              "released",
+              "paid",
+              "cancelled",
+              "expired"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "description": "Issue title",
+            "type": "string"
+          },
+          "verdict": {
+            "description": "Verdict of the newest claim that has one",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "amount_usd",
+          "claims",
+          "created_at",
+          "criteria",
+          "done_when",
+          "events",
+          "id",
+          "issue_number",
+          "issue_url",
+          "repo_name",
+          "repo_owner",
+          "status",
+          "title",
+          "verdict"
+        ],
+        "title": "BountyPage",
+        "type": "object"
+      },
+      "ClaimRequest": {
+        "properties": {
+          "paypal_email": {
+            "description": "PayPal account that receives the payout; never shown publicly",
+            "maxLength": 254,
+            "type": "string"
+          },
+          "solver_kind": {
+            "description": "Whether a person or an AI agent does the work",
+            "enum": [
+              "human",
+              "agent"
+            ],
+            "type": "string"
+          },
+          "solver_name": {
+            "description": "Display name of the solver",
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "paypal_email",
+          "solver_kind",
+          "solver_name"
+        ],
+        "title": "ClaimRequest",
+        "type": "object"
+      },
+      "ClaimView": {
+        "properties": {
+          "created_at": {
+            "description": "When the claim was made",
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "description": "Claim id",
+            "format": "uuid",
+            "type": "string"
+          },
+          "pr_url": {
+            "description": "Submitted pull request, if any",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "solver_kind": {
+            "description": "human or agent",
+            "enum": [
+              "human",
+              "agent"
+            ],
+            "type": "string"
+          },
+          "solver_name": {
+            "description": "Display name of the solver",
+            "type": "string"
+          },
+          "status": {
+            "description": "open, submitted, rejected, needs_human or accepted",
+            "enum": [
+              "open",
+              "submitted",
+              "rejected",
+              "needs_human",
+              "accepted"
+            ],
+            "type": "string"
+          },
+          "verdict": {
+            "description": "Review result, once reviewed",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Verdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "created_at",
+          "id",
+          "pr_url",
+          "solver_kind",
+          "solver_name",
+          "status",
+          "verdict"
+        ],
+        "title": "ClaimView",
+        "type": "object"
+      },
+      "CreateBountyRequest": {
+        "properties": {
+          "amount_usd": {
+            "description": "Reward in USD, a number or a numeric string, 2 decimals at most",
+            "exclusiveMinimum": 0.0,
+            "type": "number"
+          },
+          "done_when": {
+            "description": "What must be true for the work to count as done",
+            "maxLength": 2000,
+            "minLength": 10,
+            "type": "string"
+          },
+          "issue_url": {
+            "description": "GitHub issue: https://github.com/<owner>/<repo>/issues/<number>",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_usd",
+          "done_when",
+          "issue_url"
+        ],
+        "title": "CreateBountyRequest",
+        "type": "object"
+      },
+      "CreatedBounty": {
+        "properties": {
+          "bounty": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BountyPage"
+              }
+            ],
+            "description": "The new draft bounty"
+          },
+          "funder_key": {
+            "description": "Secret that authorises fund, decide and cancel. Shown only in this response: it cannot be recovered.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bounty",
+          "funder_key"
+        ],
+        "title": "CreatedBounty",
+        "type": "object"
+      },
+      "Criterion": {
+        "properties": {
+          "id": {
+            "description": "Criterion id: c1, c2, ...",
+            "type": "string"
+          },
+          "text": {
+            "description": "What the added lines must show",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "Criterion",
+        "type": "object"
+      },
+      "DecideRequest": {
+        "properties": {
+          "decision": {
+            "description": "Pay the solver, or turn the claim down and reopen the bounty",
+            "enum": [
+              "release",
+              "reject"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "DecideRequest",
+        "type": "object"
+      },
+      "FundRequest": {
+        "properties": {
+          "criteria": {
+            "description": "The final acceptance criteria, as the funder edited them",
+            "items": {
+              "$ref": "#/components/schemas/Criterion"
+            },
+            "maxItems": 6,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "criteria"
+        ],
+        "title": "FundRequest",
+        "type": "object"
+      },
+      "SubmitRequest": {
+        "properties": {
+          "pr_url": {
+            "description": "Pull request: https://github.com/<owner>/<repo>/pull/<number>",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pr_url"
+        ],
+        "title": "SubmitRequest",
+        "type": "object"
+      },
+      "Verdict": {
+        "properties": {
+          "ci": {
+            "description": "green, red or pending",
+            "enum": [
+              "green",
+              "red",
+              "pending"
+            ],
+            "type": "string"
+          },
+          "items": {
+            "description": "One entry per criterion",
+            "items": {
+              "$ref": "#/components/schemas/VerdictItem"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "description": "pass, fail or needs_human",
+            "enum": [
+              "pass",
+              "fail",
+              "needs_human"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "ci",
+          "items",
+          "outcome"
+        ],
+        "title": "Verdict",
+        "type": "object"
+      },
+      "VerdictItem": {
+        "properties": {
+          "criterion_id": {
+            "description": "Id of the judged criterion",
+            "type": "string"
+          },
+          "file": {
+            "description": "Path of the file the quote comes from",
+            "type": "string"
+          },
+          "quote": {
+            "description": "Verbatim quote from the added lines of the diff",
+            "type": "string"
+          },
+          "reason": {
+            "description": "One-sentence explanation",
+            "type": "string"
+          },
+          "state": {
+            "description": "met, not_met or unverified",
+            "enum": [
+              "met",
+              "not_met",
+              "unverified"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "criterion_id",
+          "file",
+          "quote",
+          "reason",
+          "state"
+        ],
+        "title": "VerdictItem",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "summary": "Escrowed bounties for GitHub issues",
+    "title": "ProofPay API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/bounties": {
+      "get": {
+        "deprecated": false,
+        "description": "Bounties that are past the draft and payment stages, newest first. Includes finished ones (paid, cancelled, expired).",
+        "operationId": "listBounties",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BountyCard"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "List bounties",
+        "tags": [
+          "bounties"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "Reads the GitHub issue and drafts acceptance criteria with the AI model. Returns the draft page and the funder key, which is shown only once: keep it, every later funder action needs it.",
+        "operationId": "createBounty",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBountyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedBounty"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Create a draft bounty",
+        "tags": [
+          "bounties"
+        ]
+      }
+    },
+    "/api/v1/bounties/{bounty_id}": {
+      "get": {
+        "deprecated": false,
+        "description": "A bounty with its acceptance criteria, claims, the verdict of the newest reviewed claim and the audit log.",
+        "operationId": "getBounty",
+        "parameters": [
+          {
+            "deprecated": false,
+            "description": "Bounty id",
+            "in": "path",
+            "name": "bounty_id",
+            "required": true,
+            "schema": {
+              "description": "Bounty id",
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BountyPage"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Get a bounty page",
+        "tags": [
+          "bounties"
+        ]
+      }
+    },
+    "/api/v1/bounties/{bounty_id}/cancel": {
+      "post": {
+        "deprecated": false,
+        "description": "Withdraws a bounty that is not in review. A held authorization is voided, so the funder is not charged.",
+        "operationId": "cancelBounty",
+        "parameters": [
+          {
+            "deprecated": false,
+            "description": "Bounty id",
+            "in": "path",
+            "name": "bounty_id",
+            "required": true,
+            "schema": {
+              "description": "Bounty id",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "description": "The funder key returned when the bounty was created. A wrong key is answered with 403 FUNDER_KEY_INVALID.",
+            "in": "header",
+            "name": "X-Funder-Key",
+            "required": true,
+            "schema": {
+              "description": "The funder key returned when the bounty was created. A wrong key is answered with 403 FUNDER_KEY_INVALID.",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BountyPage"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Cancel a bounty",
+        "tags": [
+          "bounties"
+        ]
+      }
+    },
+    "/api/v1/bounties/{bounty_id}/claims": {
+      "post": {
+        "deprecated": false,
+        "description": "A person or an AI agent announces work on a funded bounty. The PayPal e-mail is kept private and used only for the payout.",
+        "operationId": "claimBounty",
+        "parameters": [
+          {
+            "deprecated": false,
+            "description": "Bounty id",
+            "in": "path",
+            "name": "bounty_id",
+            "required": true,
+            "schema": {
+              "description": "Bounty id",
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimView"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Claim a funded bounty",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/api/v1/bounties/{bounty_id}/decide": {
+      "post": {
+        "deprecated": false,
+        "description": "Only for a bounty in `needs_human`: `release` pays the solver, `reject` turns the claim down and reopens the bounty.",
+        "operationId": "decideBounty",
+        "parameters": [
+          {
+            "deprecated": false,
+            "description": "Bounty id",
+            "in": "path",
+            "name": "bounty_id",
+            "required": true,
+            "schema": {
+              "description": "Bounty id",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "description": "The funder key returned when the bounty was created. A wrong key is answered with 403 FUNDER_KEY_INVALID.",
+            "in": "header",
+            "name": "X-Funder-Key",
+            "required": true,
+            "schema": {
+              "description": "The funder key returned when the bounty was created. A wrong key is answered with 403 FUNDER_KEY_INVALID.",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BountyPage"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Settle a bounty the judge could not decide",
+        "tags": [
+          "bounties"
+        ]
+      }
+    },
+    "/api/v1/bounties/{bounty_id}/fund": {
+      "post": {
+        "deprecated": false,
+        "description": "Stores the final criteria and creates a PayPal order that only authorizes the amount. Send the funder to `approve_url`; the money is held, not taken, until the work is verified.",
+        "operationId": "fundBounty",
+        "parameters": [
+          {
+            "deprecated": false,
+            "description": "Bounty id",
+            "in": "path",
+            "name": "bounty_id",
+            "required": true,
+            "schema": {
+              "description": "Bounty id",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "description": "The funder key returned when the bounty was created. A wrong key is answered with 403 FUNDER_KEY_INVALID.",
+            "in": "header",
+            "name": "X-Funder-Key",
+            "required": true,
+            "schema": {
+              "description": "The funder key returned when the bounty was created. A wrong key is answered with 403 FUNDER_KEY_INVALID.",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FundRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApproveLink"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Fix the criteria and open PayPal checkout",
+        "tags": [
+          "bounties"
+        ]
+      }
+    },
+    "/api/v1/claims/{claim_id}/submit": {
+      "post": {
+        "deprecated": false,
+        "description": "The pull request must be in the bounty's repository and mention the issue (`#<number>`). Review starts at once: CI first, then the AI judge; the verdict appears on the bounty page.",
+        "operationId": "submitClaim",
+        "parameters": [
+          {
+            "deprecated": false,
+            "description": "Claim id",
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "description": "Claim id",
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimView"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Submit a pull request for review",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "deprecated": false,
+        "description": "Answers as long as the application process is alive. Does not check external dependencies - use /readyz for that.",
+        "operationId": "HealthzHealthz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "Process liveness",
+        "tags": [
+          "Service"
+        ]
+      }
+    },
+    "/paypal/cancel": {
+      "get": {
+        "deprecated": false,
+        "description": "PayPal sends the funder's browser here when they leave checkout. The bounty goes back to draft and the browser to its page.",
+        "operationId": "paypalCancel",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "PayPal order id; PayPal sends it as `token`",
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "description": "PayPal order id; PayPal sends it as `token`",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect Response",
+            "headers": {
+              "location": {
+                "deprecated": false,
+                "description": "target path for the redirect",
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "PayPal approval cancelled",
+        "tags": [
+          "paypal"
+        ]
+      }
+    },
+    "/paypal/return": {
+      "get": {
+        "deprecated": false,
+        "description": "PayPal sends the funder's browser here after approval. Authorizes the order, which opens the bounty, and redirects to its page. Repeating the request is harmless.",
+        "operationId": "paypalReturn",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "PayPal order id; PayPal sends it as `token`",
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "description": "PayPal order id; PayPal sends it as `token`",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect Response",
+            "headers": {
+              "location": {
+                "deprecated": false,
+                "description": "target path for the redirect",
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "PayPal approval return",
+        "tags": [
+          "paypal"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "deprecated": false,
+        "description": "Checks PostgreSQL, the only service request handling cannot do without. Answers 503 when it is unavailable; the body carries the state of the service.",
+        "operationId": "ReadyzReadyz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "Readiness to accept requests",
+        "tags": [
+          "Service"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}
