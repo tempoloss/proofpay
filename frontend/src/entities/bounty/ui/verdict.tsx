@@ -120,6 +120,11 @@ export function VerdictSummary({ verdict }: { verdict: Verdict }) {
       <span className="font-mono text-muted text-xs tabular-nums">
         {met}/{verdict.items.length} proven
       </span>
+      {verdict.head_sha ? (
+        <span className="font-mono text-faint text-xs" title={`Judged commit ${verdict.head_sha}`}>
+          @{verdict.head_sha.slice(0, 7)}
+        </span>
+      ) : null}
     </div>
   );
 }
