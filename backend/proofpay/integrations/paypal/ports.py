@@ -1,4 +1,4 @@
-"""PayPal payment port: authorize, capture, void and pay out (USD only)."""
+"""PayPal payment port: authorize, capture, void, refund and pay out (USD only)."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,6 +54,10 @@ class PaymentGateway(Protocol):
 
     async def void(self, auth_id: str, *, request_id: str) -> None: ...
 
+    async def refund(self, capture_id: str, *, request_id: str) -> str:
+        """Refunds the whole capture; returns the refund id."""
+        ...
+
     async def payout(
         self,
         email: str,
@@ -63,7 +67,11 @@ class PaymentGateway(Protocol):
         *,
         request_id: str,
     ) -> str:
-        """Sends one payout item to a PayPal account; returns the batch id."""
+        """Sends one payout item to a PayPal account; returns the batch id.
+
+        PayPal rejects a reused sender_batch_id and points at the original
+        payout: the implementation returns that batch id instead of failing.
+        """
         ...
 
     async def payout_status(self, batch_id: str) -> PayoutStatus: ...

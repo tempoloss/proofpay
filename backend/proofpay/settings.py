@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # -- language models ----------------------------------------------
     gemini_api_key: SecretStr = SecretStr("")
-    llm_model: str = "gemini-3.7-flash"
+    llm_model: str = "gemini-3-flash-preview"
     fallback_base_url: str = ""
     fallback_model: str = ""
     fallback_api_key: SecretStr = SecretStr("")

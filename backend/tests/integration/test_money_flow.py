@@ -265,6 +265,190 @@ async def test_ci_pending_waits_without_asking_the_judge(
     assert services.gateway.calls_of("capture") == []
 
 
+async def test_ci_still_pending_after_an_hour_parks_the_claim_for_a_human(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.code.check_runs = [
+        CheckRun(name="pytest", status="in_progress", conclusion=None)
+    ]
+
+    services.clock.current = NOW + timedelta(minutes=59, seconds=59)
+    await _review(flow, claim.id)
+    assert (await flow.page(opened.bounty.id)).status == "in_review"
+
+    services.clock.current = NOW + timedelta(minutes=60)
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "needs_human"
+    assert [item.status for item in view.claims] == ["needs_human"]
+    assert dict(view.events[-1].detail) == {
+        "claim_id": str(claim.id),
+        "reason": "CI did not finish within 60 minutes",
+    }
+    assert services.model.asked_for(JudgeAnswer) == []
+    assert services.gateway.calls_of("capture") == []
+
+
+async def test_the_ci_wait_counts_from_the_latest_submission_of_the_claim(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.claim(opened)
+    async with flow.service() as service:
+        await service.submit(claim.id, PR_URL)
+    services.code.check_runs = [
+        CheckRun(name="pytest", status="completed", conclusion="failure")
+    ]
+    services.model.queue(confirming_judge())
+    await _review(flow, claim.id)  # rejected: bounty funded again
+    services.clock.current = NOW + timedelta(hours=3)
+    async with flow.service() as service:
+        await service.submit(claim.id, PR_URL)  # a fresh submission, a fresh hour
+    services.code.check_runs = [
+        CheckRun(name="pytest", status="in_progress", conclusion=None)
+    ]
+
+    services.clock.current = NOW + timedelta(hours=3, minutes=30)
+    await _review(flow, claim.id)
+
+    assert (await flow.page(opened.bounty.id)).status == "in_review"
+
+
+async def test_a_push_during_review_is_not_judged_and_is_queued_again_without_events(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.model.queue(confirming_judge())
+    # CI is read for the first head; by the time of the second look it moved.
+    services.code.head_shas = ["a" * 40, "b" * 40]
+    events_before = flow.kinds(await flow.page(opened.bounty.id))
+
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "in_review"
+    assert flow.kinds(view) == events_before
+    assert services.model.asked_for(JudgeAnswer) == []
+    assert services.jobs.calls[-1] == ("review", claim.id, HALF_A_MINUTE)
+    assert services.code.checked_shas == ["a" * 40]
+
+    services.code.head_sha = "b" * 40
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "released"
+    assert services.code.checked_shas == ["a" * 40, "b" * 40]
+    assert view.verdict is not None
+    assert view.verdict.head_sha == "b" * 40
+    ci_event = next(event for event in view.events if event.kind == "ci")
+    assert ci_event.detail["head_sha"] == "b" * 40
+
+
+async def test_the_verdict_records_the_commit_that_was_judged(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.code.head_sha = "c" * 40
+    services.model.queue(confirming_judge())
+
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.verdict is not None
+    assert view.verdict.head_sha == "c" * 40
+
+
+async def test_a_pull_request_closed_without_merge_is_rejected_not_judged(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.code.pr_state = "closed"
+    services.model.queue(confirming_judge())
+
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "funded"
+    assert [item.status for item in view.claims] == ["rejected"]
+    assert view.events[-1].kind == "rejected"
+    assert dict(view.events[-1].detail) == {
+        "claim_id": str(claim.id),
+        "reason": "pull request closed",
+    }
+    assert services.model.asked_for(JudgeAnswer) == []
+    assert services.gateway.calls_of("capture") == []
+
+
+async def test_a_pull_request_closed_while_the_diff_was_fetched_is_rejected(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.model.queue(confirming_judge())
+    pulls = services.code.pull_request
+
+    async def closing_after_the_first_look(owner: str, repo: str, number: int):
+        pull = await pulls(owner, repo, number)
+        services.code.pr_state = "closed"
+        return pull
+
+    services.code.pull_request = closing_after_the_first_look  # type: ignore[method-assign]
+
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "funded"
+    assert view.events[-1].kind == "rejected"
+    assert services.gateway.calls_of("capture") == []
+
+
+async def test_a_merged_pull_request_is_judged_normally(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.code.pr_state = "closed"
+    services.code.pr_merged = True
+    services.model.queue(confirming_judge())
+
+    await _review(flow, claim.id)
+
+    assert (await flow.page(opened.bounty.id)).status == "released"
+
+
+async def test_a_test_criterion_proven_from_source_code_goes_to_a_human(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    answer = confirming_judge()
+    answer.items[1] = JudgeItem(
+        criterion_id="c2",
+        met=True,
+        quote="return None",
+        file=SOURCE_FILE,
+        reason="the code handles it",
+    )
+    services.model.queue(answer)
+
+    await _review(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "needs_human"
+    assert view.verdict is not None
+    assert [item.state for item in view.verdict.items] == ["met", "unverified"]
+    assert (
+        view.verdict.items[1].reason == "test criterion must be proven from a test file"
+    )
+    assert services.gateway.calls_of("capture") == []
+
+
 async def test_ci_red_rejects_even_when_the_judge_confirms_everything(
     flow: Flow, services: FakeServices
 ) -> None:
@@ -808,21 +992,259 @@ async def test_cancel_with_a_wrong_key_is_forbidden_and_voids_nothing(
     assert (await flow.page(opened.bounty.id)).status == "funded"
 
 
-async def test_cancel_after_capture_is_refused_so_captured_money_is_not_voided(
+def _batch(claim_id, attempt: int = 1) -> str:
+    """Batch id the fake PayPal returns for the given payout attempt."""
+    return f"BATCH-payout-{claim_id}" + (f"-{attempt}" if attempt > 1 else "")
+
+
+def _failed_payout(services: FakeServices, claim_id, attempt: int = 1) -> None:
+    services.gateway.batch_statuses[_batch(claim_id, attempt)] = PayoutStatus(
+        batch_status="SUCCESS", item_status="BLOCKED"
+    )
+
+
+async def test_dead_payout_then_release_sends_a_new_payout_and_never_the_first_again(
     flow: Flow, services: FakeServices
 ) -> None:
     opened, claim = await _reviewed_to_payout(flow, services)
-    services.gateway.payout_statuses = [
-        PayoutStatus(batch_status="SUCCESS", item_status="BLOCKED")
+    _failed_payout(services, claim.id)
+    await _poll(flow, claim.id)
+    assert (await flow.page(opened.bounty.id)).status == "needs_human"
+
+    await _decide(flow, opened, "release")
+
+    payouts = services.gateway.calls_of("payout")
+    assert [call.request_id for call in payouts] == [
+        f"payout-{claim.id}",
+        f"payout-{claim.id}-2",
     ]
-    await _poll(flow, claim.id)  # needs_human, already captured
+    assert [call.args["sender_batch_id"] for call in payouts] == [
+        f"payout-{claim.id}",
+        f"payout-{claim.id}-2",
+    ]
+    assert len(services.gateway.calls_of("capture")) == 1
+    assert (await flow.page(opened.bounty.id)).status == "released"
+    await _poll(flow, claim.id)
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "paid"
+    assert [item.status for item in view.claims] == ["accepted"]
+    assert services.gateway.calls_of("payout_status")[-1].args["batch_id"] == _batch(
+        claim.id, 2
+    )
+
+
+async def test_dead_payout_event_says_definitive_and_names_the_batch(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    _failed_payout(services, claim.id)
+
+    await _poll(flow, claim.id)
+
+    view = await flow.page(opened.bounty.id)
+    event = view.events[-1]
+    assert event.kind == "payout_failed"
+    assert dict(event.detail) == {
+        "claim_id": str(claim.id),
+        "batch_id": _batch(claim.id),
+        "item_status": "BLOCKED",
+        "definitive": True,
+    }
+    assert [item.status for item in view.claims] == ["needs_human"]
+
+
+@pytest.mark.parametrize(
+    "status", ["FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED"]
+)
+async def test_every_dead_item_state_frees_the_payout_for_a_new_attempt(
+    flow: Flow, services: FakeServices, status: str
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    services.gateway.batch_statuses[_batch(claim.id)] = PayoutStatus(
+        batch_status="SUCCESS", item_status=status
+    )
+    await _poll(flow, claim.id)
+
+    await _decide(flow, opened, "release")
+
+    assert len(services.gateway.calls_of("payout")) == 2
+
+
+@pytest.mark.parametrize("batch_status", ["DENIED", "CANCELED"])
+async def test_a_denied_or_canceled_batch_frees_the_payout_for_a_new_attempt(
+    flow: Flow, services: FakeServices, batch_status: str
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    services.gateway.batch_statuses[_batch(claim.id)] = PayoutStatus(
+        batch_status=batch_status, item_status=None
+    )
+    await _poll(flow, claim.id)
+
+    await _decide(flow, opened, "release")
+
+    ids = [call.request_id for call in services.gateway.calls_of("payout")]
+    assert ids == [f"payout-{claim.id}", f"payout-{claim.id}-2"]
+
+
+async def test_attempt_numbers_keep_counting_and_an_error_reuses_its_id(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    _failed_payout(services, claim.id, 1)
+    await _poll(flow, claim.id)
+    services.gateway.fail["payout"] = PAYPAL_REJECTED
+    await _decide(flow, opened, "release")  # attempt 2 raises: ambiguous
+    del services.gateway.fail["payout"]
+    _failed_payout(services, claim.id, 2)
+    await _decide(flow, opened, "release")  # attempt 2 again, same id
+    await _poll(flow, claim.id)  # attempt 2 turned out dead
+
+    await _decide(flow, opened, "release")
+
+    ids = [call.request_id for call in services.gateway.calls_of("payout")]
+    assert ids == [
+        f"payout-{claim.id}",
+        f"payout-{claim.id}-2",
+        f"payout-{claim.id}-2",
+        f"payout-{claim.id}-3",
+    ]
+    assert len(services.gateway.calls_of("capture")) == 1
+
+
+async def test_unclaimed_payout_keeps_its_batch_and_cancel_is_refused(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    services.gateway.batch_statuses[_batch(claim.id)] = PayoutStatus(
+        batch_status="SUCCESS", item_status="UNCLAIMED"
+    )
+    await _poll(flow, claim.id)
 
     with pytest.raises(ConflictError) as refused:
         async with flow.service() as service:
             await service.cancel(opened.bounty.id, opened.key)
 
-    assert refused.value.code == "ALREADY_CAPTURED"
+    assert refused.value.code == "PAYOUT_IN_FLIGHT"
+    assert services.gateway.calls_of("refund") == []
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "needs_human"
+    assert dict(view.events[-1].detail)["definitive"] is False
+
+
+async def test_onhold_payout_is_not_dead_either(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    services.gateway.batch_statuses[_batch(claim.id)] = PayoutStatus(
+        batch_status="PROCESSING", item_status="ONHOLD"
+    )
+    await _poll(flow, claim.id)
+
+    await _decide(flow, opened, "release")
+
+    assert len(services.gateway.calls_of("payout")) == 1
+    assert (await flow.page(opened.bounty.id)).status == "released"
+
+
+async def test_cancel_while_the_payout_is_pending_is_409_payout_in_flight(
+    flow: Flow, services: FakeServices, client: AsyncTestClient[Litestar]
+) -> None:
+    opened, _claim = await _reviewed_to_payout(flow, services)
+
+    response = await client.post(
+        f"/api/v1/bounties/{opened.bounty.id}/cancel",
+        headers={"X-Funder-Key": opened.key},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "PAYOUT_IN_FLIGHT"
+    assert services.gateway.calls_of("refund") == []
+    assert (await flow.page(opened.bounty.id)).status == "released"
+
+
+async def test_cancel_after_a_dead_payout_refunds_once_and_cancels(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    _failed_payout(services, claim.id)
+    await _poll(flow, claim.id)
+
+    async with flow.service() as service:
+        await service.cancel(opened.bounty.id, opened.key)
+
+    refunds = services.gateway.calls_of("refund")
+    assert [call.request_id for call in refunds] == [f"refund-{opened.bounty.id}"]
+    assert refunds[0].args["capture_id"] == f"CAPTURE-AUTH-ORDER-{opened.bounty.id}"
     assert services.gateway.calls_of("void") == []
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "cancelled"
+    assert flow.kinds(view)[-3:] == ["payout_failed", "refunded", "cancelled"]
+    refunded = view.events[-2]
+    assert dict(refunded.detail) == {
+        "refund_id": f"REFUND-CAPTURE-AUTH-ORDER-{opened.bounty.id}"
+    }
+
+    with pytest.raises(ConflictError) as again:
+        async with flow.service() as service:
+            await service.cancel(opened.bounty.id, opened.key)
+    assert again.value.code == "INVALID_TRANSITION"
+    assert len(services.gateway.calls_of("refund")) == 1
+
+
+async def test_cancel_after_a_payout_that_only_raised_refunds(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.submitted(opened)
+    services.gateway.fail["payout"] = PAYPAL_REJECTED
+    services.model.queue(confirming_judge())
+    await _review(flow, claim.id)
+
+    async with flow.service() as service:
+        await service.cancel(opened.bounty.id, opened.key)
+
+    assert len(services.gateway.calls_of("refund")) == 1
+    assert (await flow.page(opened.bounty.id)).status == "cancelled"
+
+
+async def test_failed_refund_leaves_the_bounty_parked_and_a_retry_reuses_the_id(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    _failed_payout(services, claim.id)
+    await _poll(flow, claim.id)
+    services.gateway.fail["refund"] = PAYPAL_REJECTED
+
+    with pytest.raises(UpstreamError):
+        async with flow.service() as service:
+            await service.cancel(opened.bounty.id, opened.key)
+
+    view = await flow.page(opened.bounty.id)
+    assert view.status == "needs_human"
+    assert "refunded" not in flow.kinds(view)
+
+    del services.gateway.fail["refund"]
+    async with flow.service() as service:
+        await service.cancel(opened.bounty.id, opened.key)
+
+    ids = [call.request_id for call in services.gateway.calls_of("refund")]
+    assert ids == [f"refund-{opened.bounty.id}"] * 2
+    assert (await flow.page(opened.bounty.id)).status == "cancelled"
+
+
+async def test_a_paid_bounty_cannot_be_cancelled_or_refunded(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened, claim = await _reviewed_to_payout(flow, services)
+    await _poll(flow, claim.id)
+
+    with pytest.raises(ConflictError) as refused:
+        async with flow.service() as service:
+            await service.cancel(opened.bounty.id, opened.key)
+
+    assert refused.value.code == "INVALID_TRANSITION"
+    assert services.gateway.calls_of("refund") == []
+    assert (await flow.page(opened.bounty.id)).status == "paid"
 
 
 async def test_cancel_while_in_review_is_refused(

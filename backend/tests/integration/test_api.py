@@ -456,6 +456,7 @@ async def test_http_path_from_creation_to_paid_with_a_verified_verdict(
     assert page["status"] == "paid"
     assert page["verdict"]["outcome"] == "pass"
     assert page["verdict"]["ci"] == "green"
+    assert page["verdict"]["head_sha"] == "a" * 40
     assert [
         (item["criterion_id"], item["state"]) for item in page["verdict"]["items"]
     ] == [

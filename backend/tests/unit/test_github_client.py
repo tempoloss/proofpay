@@ -123,7 +123,8 @@ async def test_pull_request_maps_fields_and_null_body() -> None:
     payload = {
         "title": "Fix divide",
         "body": None,
-        "state": "open",
+        "state": "closed",
+        "merged": True,
         "html_url": "https://github.com/o/r/pull/3",
         "head": {"sha": "abc123"},
     }
@@ -131,13 +132,31 @@ async def test_pull_request_maps_fields_and_null_body() -> None:
 
     pr = await make_client(recorder).pull_request("o", "r", 3)
 
-    assert (pr.title, pr.body, pr.head_sha, pr.state, pr.html_url) == (
+    assert (pr.title, pr.body, pr.head_sha, pr.state, pr.merged, pr.html_url) == (
         "Fix divide",
         "",
         "abc123",
-        "open",
+        "closed",
+        True,
         "https://github.com/o/r/pull/3",
     )
+
+
+async def test_pull_request_closed_without_merge_is_not_merged() -> None:
+    payload = {
+        "title": "t",
+        "body": "",
+        "state": "closed",
+        "merged": False,
+        "html_url": "https://github.com/o/r/pull/3",
+        "head": {"sha": "abc123"},
+    }
+
+    pr = await make_client(Recorder(httpx.Response(200, json=payload))).pull_request(
+        "o", "r", 3
+    )
+
+    assert (pr.state, pr.merged) == ("closed", False)
 
 
 async def test_checks_lists_runs_with_pending_conclusion_as_none() -> None:

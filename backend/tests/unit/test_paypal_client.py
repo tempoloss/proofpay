@@ -145,8 +145,13 @@ Call = Callable[[PayPalClient], Awaitable[object]]
                 request_id="payout-c1",
             ),
         ),
+        (
+            "/v2/payments/captures/CAP1/refund",
+            httpx.Response(201, json={"id": "REF1", "status": "COMPLETED"}),
+            lambda c: c.refund("CAP1", request_id="refund-b1"),
+        ),
     ],
-    ids=["create_order", "authorize", "capture", "void", "payout"],
+    ids=["create_order", "authorize", "capture", "void", "payout", "refund"],
 )
 async def test_every_post_carries_its_request_id(
     path: str, response: httpx.Response, call: Call
@@ -164,6 +169,7 @@ async def test_every_post_carries_its_request_id(
         "/v2/payments/authorizations/AUTH1/capture": "capture-b1",
         "/v2/payments/authorizations/AUTH1/void": "void-b1",
         "/v1/payments/payouts": "payout-c1",
+        "/v2/payments/captures/CAP1/refund": "refund-b1",
     }[path]
     assert request.headers["PayPal-Request-Id"] == expected
     assert request.headers["Authorization"] == "Bearer tok-1"
@@ -439,3 +445,152 @@ async def test_payout_status_without_items_yet() -> None:
     status = await make_client(stub).payout_status("BATCH1")
 
     assert (status.batch_status, status.item_status) == ("PENDING", None)
+
+
+async def test_refund_refunds_the_whole_capture_and_returns_the_refund_id() -> None:
+    stub = PayPalStub(
+        {
+            "/v2/payments/captures/CAP1/refund": httpx.Response(
+                201, json={"id": "REF1", "status": "COMPLETED"}
+            )
+        }
+    )
+
+    refund_id = await make_client(stub).refund("CAP1", request_id="refund-b1")
+
+    assert refund_id == "REF1"
+    [request] = stub.api_requests()
+    assert json.loads(request.content) == {}  # no amount: a full refund
+
+
+async def test_refund_replayed_by_request_id_answers_200_with_the_same_refund() -> None:
+    stub = PayPalStub(
+        {
+            "/v2/payments/captures/CAP1/refund": httpx.Response(
+                200, json={"id": "REF1", "status": "COMPLETED"}
+            )
+        }
+    )
+
+    assert await make_client(stub).refund("CAP1", request_id="refund-b1") == "REF1"
+
+
+async def test_pending_refund_counts_as_accepted() -> None:
+    stub = PayPalStub(
+        {
+            "/v2/payments/captures/CAP1/refund": httpx.Response(
+                201, json={"id": "REF1", "status": "PENDING"}
+            )
+        }
+    )
+
+    assert await make_client(stub).refund("CAP1", request_id="refund-b1") == "REF1"
+
+
+@pytest.mark.parametrize("status", ["FAILED", "CANCELLED"])
+async def test_refund_that_did_not_give_the_money_back_is_an_error(status: str) -> None:
+    stub = PayPalStub(
+        {
+            "/v2/payments/captures/CAP1/refund": httpx.Response(
+                201, json={"id": "REF1", "status": status}
+            )
+        }
+    )
+
+    with pytest.raises(UpstreamError) as raised:
+        await make_client(stub).refund("CAP1", request_id="refund-b1")
+
+    assert raised.value.code == "PAYPAL_REFUND_FAILED"
+
+
+async def test_refund_rejected_by_paypal_is_an_upstream_error() -> None:
+    stub = PayPalStub(
+        {
+            "/v2/payments/captures/CAP1/refund": httpx.Response(
+                422,
+                json={"name": "CAPTURE_FULLY_REFUNDED", "debug_id": "dbg-9"},
+            )
+        }
+    )
+
+    with pytest.raises(UpstreamError) as raised:
+        await make_client(stub).refund("CAP1", request_id="refund-b1")
+
+    assert raised.value.code == "PAYPAL_ERROR"
+    assert raised.value.params["name"] == "CAPTURE_FULLY_REFUNDED"
+
+
+DUPLICATE_BATCH = {
+    "name": "USER_BUSINESS_ERROR",
+    "message": "User business error.",
+    "debug_id": "dbg-1",
+    "details": [
+        {
+            "field": "sender_batch_id",
+            "issue": "Batch with given sender_batch_id already exists",
+        }
+    ],
+    "links": [
+        {
+            "href": "https://api-m.sandbox.paypal.com/v1/payments/payouts/BATCH-OLD",
+            "rel": "self",
+            "method": "GET",
+        }
+    ],
+}
+
+
+async def _payout_with(response: httpx.Response) -> str:
+    stub = PayPalStub({"/v1/payments/payouts": response})
+    return await make_client(stub).payout(
+        "solver@example.com",
+        Decimal("25"),
+        "payout-c1",
+        "Bounty for #1",
+        request_id="payout-c1",
+    )
+
+
+async def test_payout_with_a_reused_sender_batch_id_returns_the_original_batch() -> (
+    None
+):
+    assert await _payout_with(httpx.Response(400, json=DUPLICATE_BATCH)) == "BATCH-OLD"
+
+
+async def test_payout_error_without_a_link_to_an_original_payout_still_raises() -> None:
+    body = {"name": "INSUFFICIENT_FUNDS", "debug_id": "dbg-2", "links": []}
+
+    with pytest.raises(UpstreamError) as raised:
+        await _payout_with(httpx.Response(400, json=body))
+
+    assert raised.value.params["name"] == "INSUFFICIENT_FUNDS"
+
+
+async def test_payout_error_linking_something_else_is_not_mistaken_for_a_duplicate() -> (
+    None
+):
+    body = {
+        "name": "VALIDATION_ERROR",
+        "debug_id": "dbg-3",
+        "links": [
+            {
+                "href": "https://developer.paypal.com/docs/api/payments.payouts-batch/v1/",
+                "rel": "information_link",
+            },
+            {
+                "href": "https://api-m.sandbox.paypal.com/v1/payments/payouts-item/ITEM1",
+                "rel": "item",
+                "method": "GET",
+            },
+        ],
+    }
+
+    with pytest.raises(UpstreamError):
+        await _payout_with(httpx.Response(400, json=body))
+
+
+async def test_server_error_on_payout_is_still_an_error_for_the_caller_to_retry() -> (
+    None
+):
+    with pytest.raises(UpstreamError):
+        await _payout_with(httpx.Response(500, json={"name": "INTERNAL_SERVICE_ERROR"}))

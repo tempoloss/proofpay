@@ -11,6 +11,7 @@ const SAMPLE_CRITERIA = [
 const SAMPLE_VERDICT = {
   outcome: "pass",
   ci: "green",
+  head_sha: "9f3c2a1d7e4b5a6c8d0e1f2a3b4c5d6e7f8a9b0c",
   items: [
     {
       criterion_id: "c1",

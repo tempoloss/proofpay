@@ -10,14 +10,15 @@ itself. Rules the methods keep, because they move money:
 - a PayPal money call (capture, payout) is committed right after it succeeds,
   so its result is never lost;
 - a job is deferred only after the commit it depends on;
-- the PayPal request ids are always derived from the bounty or claim id, so a
-  repeated call after an ambiguous failure replays instead of paying twice.
+- the PayPal request ids are derived from the bounty or claim id, so a repeated
+  call after an ambiguous failure replays instead of acting twice; only a
+  payout PayPal reported dead moves to a new id (`payout-<claim>-2`, ...).
 """
 
 import hmac
 import re
 import secrets
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -27,7 +28,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from proofpay.integrations.github.ports import CodeHost, Issue
+from proofpay.integrations.github.ports import CodeHost, Issue, PullRequest
 from proofpay.integrations.llm.ports import LLMUnavailable, StructuredModel
 from proofpay.integrations.paypal.ports import PaymentGateway
 from proofpay.modules.bounties.application.prompts import (
@@ -54,6 +55,8 @@ from proofpay.modules.bounties.domain.entities import (
 from proofpay.modules.bounties.domain.ports import JobQueue
 from proofpay.modules.bounties.domain.repositories import BountyRepository
 from proofpay.modules.bounties.domain.rules import (
+    CI_TIMEOUT_REASON,
+    CI_WAIT_LIMIT,
     MAX_DIFF_CHARS,
     check_quotes,
     ci_state,
@@ -87,10 +90,13 @@ RECHECK_DELAY = timedelta(seconds=30)
 # An authorization that ends within this window is voided before it lapses.
 EXPIRY_WINDOW = timedelta(hours=24)
 
-_FAILED_ITEM_STATES = frozenset(
-    {"FAILED", "RETURNED", "UNCLAIMED", "BLOCKED", "REFUNDED", "REVERSED"}
+_DEFINITIVE_ITEM_STATES = frozenset(
+    {"FAILED", "RETURNED", "BLOCKED", "REFUNDED", "REVERSED"}
 )
-_FAILED_BATCH_STATES = frozenset({"DENIED", "CANCELED"})
+_DEFINITIVE_BATCH_STATES = frozenset({"DENIED", "CANCELED"})
+# PayPal can still deliver an unclaimed payout for 30 days: never a new payout.
+_STUCK_ITEM_STATES = frozenset({"UNCLAIMED", "ONHOLD"})
+PR_CLOSED_REASON = "pull request closed"
 _ACTIVE_CLAIM_STATES = frozenset({ClaimStatus.SUBMITTED, ClaimStatus.NEEDS_HUMAN})
 
 
@@ -100,6 +106,19 @@ class CreatedBounty:
 
     bounty: Bounty
     funder_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Evidence:
+    """What a review reads from GitHub, all for one commit."""
+
+    head_sha: str
+    ci: CiState
+    diff: str
+
+
+class _ReviewHandledError(Exception):
+    """The review already moved the claim on; there is nothing left to do."""
 
 
 def _failure_code(exc: Exception) -> str:
@@ -365,42 +384,43 @@ class BountyService:
         owner, repo, number = match[1], match[2], int(match[3])
 
         try:
-            pull = await self._code.pull_request(owner, repo, number)
-            ci = ci_state(await self._code.checks(owner, repo, pull.head_sha))
-            if ci is CiState.PENDING:
-                await self._session.commit()
-                await self._jobs.review(claim.id, delay=RECHECK_DELAY)
-                return
-            await self._event(
-                bounty.id,
-                EventKind.CI,
-                claim_id=str(claim.id),
-                state=ci.value,
-                head_sha=pull.head_sha,
-            )
-            diff = await self._code.diff(owner, repo, number)
-        except (NotFoundError, UpstreamError) as exc:
-            await self._to_needs_human(
-                bounty, claim, f"github error: {_failure_code(exc)}"
-            )
+            evidence = await self._collect_evidence(bounty, claim, owner, repo, number)
+        except _ReviewHandledError:
             return
+        await self._event(
+            bounty.id,
+            EventKind.CI,
+            claim_id=str(claim.id),
+            state=evidence.ci.value,
+            head_sha=evidence.head_sha,
+        )
 
-        if len(diff) > MAX_DIFF_CHARS:
+        if len(evidence.diff) > MAX_DIFF_CHARS:
             await self._to_needs_human(bounty, claim, "diff too large")
             return
         try:
             answer = await self._model.ask(
                 JUDGE_SYSTEM,
-                judge_prompt(bounty.title, bounty.done_when, bounty.criteria, diff),
+                judge_prompt(
+                    bounty.title, bounty.done_when, bounty.criteria, evidence.diff
+                ),
                 JudgeAnswer,
             )
         except LLMUnavailable:
             await self._to_needs_human(bounty, claim, "llm unavailable")
             return
 
-        items = check_quotes(bounty.criteria, answer, diff)
-        result = outcome(items, ci)
-        claim = replace(claim, verdict=Verdict(outcome=result, items=items, ci=ci))
+        items = check_quotes(bounty.criteria, answer, evidence.diff)
+        result = outcome(items, evidence.ci)
+        claim = replace(
+            claim,
+            verdict=Verdict(
+                outcome=result,
+                items=items,
+                ci=evidence.ci,
+                head_sha=evidence.head_sha,
+            ),
+        )
         await self._repo.save_claim(claim)
         states = [item.state for item in items]
         await self._event(
@@ -416,10 +436,57 @@ class BountyService:
             await self._session.commit()
             await self.release(claim.id)
         elif result is Outcome.FAIL:
-            reason = "ci not green" if ci is not CiState.GREEN else "criteria not met"
+            reason = (
+                "ci not green"
+                if evidence.ci is not CiState.GREEN
+                else "criteria not met"
+            )
             await self._reject(bounty, claim, reason)
         else:
             await self._to_needs_human(bounty, claim, "quotes could not be verified")
+
+    async def _collect_evidence(
+        self, bounty: Bounty, claim: Claim, owner: str, repo: str, number: int
+    ) -> _Evidence:
+        """Read the pull request, its CI and its diff, for one commit.
+
+        Raises `_ReviewHandledError` once the claim was moved on instead: parked
+        for a human, rejected, or queued to look again.
+        """
+        pull = await self._fetch(
+            bounty, claim, self._code.pull_request(owner, repo, number)
+        )
+        await self._reject_if_abandoned(bounty, claim, pull)
+        runs = await self._fetch(
+            bounty, claim, self._code.checks(owner, repo, pull.head_sha)
+        )
+        ci = ci_state(runs)
+        if ci is CiState.PENDING:
+            if await self._ci_overdue(bounty.id, claim.id):
+                await self._to_needs_human(bounty, claim, CI_TIMEOUT_REASON)
+            else:
+                await self._session.commit()
+                await self._jobs.review(claim.id, delay=RECHECK_DELAY)
+            raise _ReviewHandledError
+        diff = await self._fetch(bounty, claim, self._code.diff(owner, repo, number))
+        # The solver may have pushed or closed the pull request meanwhile: what
+        # is judged must be the commit whose CI was read.
+        latest = await self._fetch(
+            bounty, claim, self._code.pull_request(owner, repo, number)
+        )
+        await self._reject_if_abandoned(bounty, claim, latest)
+        if latest.head_sha != pull.head_sha:
+            await self._session.commit()
+            await self._jobs.review(claim.id, delay=RECHECK_DELAY)
+            raise _ReviewHandledError
+        return _Evidence(head_sha=pull.head_sha, ci=ci, diff=diff)
+
+    async def _reject_if_abandoned(
+        self, bounty: Bounty, claim: Claim, pull: PullRequest
+    ) -> None:
+        if pull.state == "closed" and not pull.merged:
+            await self._reject(bounty, claim, PR_CLOSED_REASON)
+            raise _ReviewHandledError
 
     # -- money -------------------------------------------------------------
 
@@ -483,18 +550,21 @@ class BountyService:
         if bounty.status is not BountyStatus.RELEASED or claim.payout_batch_id:
             await self._session.commit()  # someone else got here first
             return
+        attempt = await self._payout_attempt(bounty.id, claim.id)
         try:
             batch_id = await self._gateway.payout(
                 claim.paypal_email,
                 bounty.amount,
-                sender_batch_id=f"payout-{claim.id}",
+                sender_batch_id=attempt,
                 note=(
                     f"ProofPay bounty {bounty.repo_owner}/{bounty.repo_name}"
                     f"#{bounty.issue_number}"
                 ),
-                request_id=f"payout-{claim.id}",
+                request_id=attempt,
             )
         except Exception as exc:
+            # Not definitive: PayPal may have the payout. The next attempt
+            # reuses this id, so PayPal answers with the original, never a copy.
             log.warning("payout_failed", claim_id=str(claim.id), error=repr(exc))
             await self._repo.save(transition(bounty, BountyStatus.NEEDS_HUMAN))
             await self._event(
@@ -502,6 +572,7 @@ class BountyService:
                 EventKind.PAYOUT_FAILED,
                 claim_id=str(claim.id),
                 reason=_failure_code(exc),
+                definitive=False,
             )
             await self._session.commit()
             return
@@ -541,18 +612,37 @@ class BountyService:
                 batch_id=batch_id,
             )
             await self._session.commit()
-        elif (
-            status.item_status in _FAILED_ITEM_STATES
-            or status.batch_status in _FAILED_BATCH_STATES
+            return
+        item_status = status.item_status or status.batch_status
+        if (
+            status.item_status in _DEFINITIVE_ITEM_STATES
+            or status.batch_status in _DEFINITIVE_BATCH_STATES
         ):
-            reason = status.item_status or status.batch_status
+            # The batch is dead: forget it, so a new attempt may pay again.
+            await self._repo.save(transition(bounty, BountyStatus.NEEDS_HUMAN))
+            await self._repo.save_claim(
+                replace(claim, status=ClaimStatus.NEEDS_HUMAN, payout_batch_id=None)
+            )
+            await self._event(
+                bounty.id,
+                EventKind.PAYOUT_FAILED,
+                claim_id=str(claim.id),
+                batch_id=batch_id,
+                item_status=item_status,
+                definitive=True,
+            )
+            await self._session.commit()
+        elif status.item_status in _STUCK_ITEM_STATES:
+            # PayPal can still deliver it: keep the batch, never send another.
             await self._repo.save(transition(bounty, BountyStatus.NEEDS_HUMAN))
             await self._repo.save_claim(replace(claim, status=ClaimStatus.NEEDS_HUMAN))
             await self._event(
                 bounty.id,
                 EventKind.PAYOUT_FAILED,
                 claim_id=str(claim.id),
-                reason=reason,
+                batch_id=batch_id,
+                item_status=item_status,
+                definitive=False,
             )
             await self._session.commit()
         else:
@@ -592,27 +682,48 @@ class BountyService:
         if bounty.capture_id is not None:
             raise ConflictError(
                 code="ALREADY_CAPTURED",
-                detail="The money was already captured; it cannot be rejected",
+                detail=(
+                    "The money was already captured; it cannot be rejected. "
+                    "Release it again, or cancel the bounty to refund it"
+                ),
             )
         await self._reject(bounty, active, "rejected by funder")
 
     async def cancel(self, bounty_id: UUID, key: str) -> None:
-        """The funder withdraws an unclaimed or parked bounty; money is voided."""
+        """The funder withdraws an unclaimed or parked bounty; money goes back.
+
+        An authorization that was never captured is voided. Captured money is
+        refunded, unless a payout is still on its way: that one is settled
+        first, so the money is never both paid and refunded.
+        """
         bounty = await self._repo.get_for_update(bounty_id)
         self._check_key(bounty, key)
-        cancelled = transition(bounty, BountyStatus.CANCELLED)
-        if bounty.status in {BountyStatus.FUNDED, BountyStatus.NEEDS_HUMAN}:
-            if bounty.capture_id is not None:
+        if bounty.capture_id is not None and bounty.status in {
+            BountyStatus.RELEASED,
+            BountyStatus.NEEDS_HUMAN,
+        }:
+            claims = await self._repo.claims_of(bounty_id)
+            if any(claim.payout_batch_id for claim in claims):
                 raise ConflictError(
-                    code="ALREADY_CAPTURED",
-                    detail="The money was already captured; it cannot be voided",
+                    code="PAYOUT_IN_FLIGHT",
+                    detail="A payout is already with PayPal; it cannot be refunded",
                 )
+        cancelled = transition(bounty, BountyStatus.CANCELLED)
+        if bounty.capture_id is not None:
+            refund_id = await self._gateway.refund(
+                bounty.capture_id, request_id=f"refund-{bounty.id}"
+            )
+            await self._repo.save(cancelled)
+            await self._event(bounty.id, EventKind.REFUNDED, refund_id=refund_id)
+        elif bounty.status in {BountyStatus.FUNDED, BountyStatus.NEEDS_HUMAN}:
             if bounty.auth_id is None:
                 raise ConflictError(
                     code="NOT_AUTHORIZED", detail="The bounty has no authorization"
                 )
             await self._gateway.void(bounty.auth_id, request_id=f"void-{bounty.id}")
-        await self._repo.save(cancelled)
+            await self._repo.save(cancelled)
+        else:
+            await self._repo.save(cancelled)
         await self._event(bounty.id, EventKind.CANCELLED)
         await self._session.commit()
 
@@ -649,8 +760,44 @@ class BountyService:
         bounty = await self._repo.get_for_update(claim.bounty_id)
         return await self._repo.get_claim(claim_id), bounty
 
+    async def _fetch[T](self, bounty: Bounty, claim: Claim, call: Awaitable[T]) -> T:
+        """Await a code-host call; on a GitHub failure park for a human."""
+        try:
+            return await call
+        except (NotFoundError, UpstreamError) as exc:
+            await self._to_needs_human(
+                bounty, claim, f"github error: {_failure_code(exc)}"
+            )
+            raise _ReviewHandledError from exc
+
+    async def _ci_overdue(self, bounty_id: UUID, claim_id: UUID) -> bool:
+        """Whether the claim was submitted at least `CI_WAIT_LIMIT` ago."""
+        for event in reversed(await self._repo.events_of(bounty_id)):
+            if event.kind is EventKind.SUBMITTED and event.detail.get(
+                "claim_id"
+            ) == str(claim_id):
+                return self._clock.now() - event.at >= CI_WAIT_LIMIT
+        return False
+
+    async def _payout_attempt(self, bounty_id: UUID, claim_id: UUID) -> str:
+        """Id of the next payout attempt: the sender_batch_id and request id.
+
+        The first attempt is `payout-<claim>`. Each batch that PayPal reported
+        dead (a `payout_failed` event marked definitive) moves to the next id,
+        because PayPal refuses to reuse a sender_batch_id for 30 days. An
+        attempt that only raised is not counted: it reuses its id.
+        """
+        dead = sum(
+            1
+            for event in await self._repo.events_of(bounty_id)
+            if event.kind is EventKind.PAYOUT_FAILED
+            and event.detail.get("claim_id") == str(claim_id)
+            and event.detail.get("definitive") is True
+        )
+        return f"payout-{claim_id}" if dead == 0 else f"payout-{claim_id}-{dead + 1}"
+
     async def _event(
-        self, bounty_id: UUID, kind: EventKind, **detail: str | int
+        self, bounty_id: UUID, kind: EventKind, **detail: str | int | bool
     ) -> None:
         await self._repo.add_event(
             Event(bounty_id=bounty_id, at=self._clock.now(), kind=kind, detail=detail)

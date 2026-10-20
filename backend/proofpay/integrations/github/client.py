@@ -52,6 +52,7 @@ class GitHubClient:
                 body=data.get("body") or "",
                 head_sha=str(data["head"]["sha"]),
                 state=str(data["state"]),
+                merged=bool(data.get("merged", False)),
                 html_url=str(data["html_url"]),
             )
         except (KeyError, TypeError) as exc:

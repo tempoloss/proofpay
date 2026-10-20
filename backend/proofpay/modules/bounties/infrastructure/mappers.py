@@ -37,6 +37,7 @@ def verdict_to_json(verdict: Verdict) -> dict[str, Any]:
     return {
         "outcome": verdict.outcome.value,
         "ci": verdict.ci.value,
+        "head_sha": verdict.head_sha,
         "items": [
             {
                 "criterion_id": item.criterion_id,
@@ -54,6 +55,7 @@ def verdict_from_json(data: dict[str, Any]) -> Verdict:
     return Verdict(
         outcome=Outcome(data["outcome"]),
         ci=CiState(data["ci"]),
+        head_sha=data.get("head_sha", ""),
         items=tuple(
             VerdictItem(
                 criterion_id=item["criterion_id"],

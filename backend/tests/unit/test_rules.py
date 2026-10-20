@@ -21,6 +21,7 @@ from proofpay.modules.bounties.domain.rules import (
     check_quotes,
     ci_state,
     hash_funder_key,
+    is_test_path,
     outcome,
     transition,
 )
@@ -405,3 +406,136 @@ def test_hash_funder_key_is_sha256_hex_digest() -> None:
     assert hash_funder_key("abc") == (
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     )
+
+
+# --- is_test_path -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/test_calc.py",
+        "test/calc.py",
+        "src/pkg/tests/helpers.py",
+        "web/__tests__/calc.js",
+        "spec/calc_spec.rb",
+        "app/specs/calc.rb",
+        "calc_test.py",
+        "pkg/test_calc.py",
+        "pkg/calc_test.py",
+        "pkg/calc_test.go",
+        "web/calc.test.ts",
+        "web/calc.test.tsx",
+        "web/calc.spec.js",
+        "web/calc.spec.mjs",
+        "web/calc.test.cjs",
+        "web/calc.test.jsx",
+        "src/main/java/CalcTest.java",
+        "src/Calc/CalcTests.cs",
+    ],
+)
+def test_is_test_path_accepts_test_directories_and_test_file_names(path: str) -> None:
+    assert is_test_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/tinycalc/__init__.py",
+        "src/calc.py",
+        "README.md",
+        "contest/calc.py",
+        "src/latest/calc.py",
+        "testing/calc.py",
+        "src/protests.py",
+        "pkg/testcalc.py",
+        "pkg/calc.test.py",
+        "web/calc.ts",
+        "web/mytest.ts",
+        "src/main/java/Calc.java",
+        "src/Calc/Calc.cs",
+        "tests",  # a file called tests, not a directory
+    ],
+)
+def test_is_test_path_rejects_source_files(path: str) -> None:
+    assert not is_test_path(path)
+
+
+# --- test criteria need a test file ----------------------------------------
+
+TEST_CRITERION = Criterion(
+    id="c1", text="A test in tests/ asserts divide(1, 0) is None"
+)
+
+
+def _check_test_criterion(quote: str, file: str) -> VerdictItem:
+    raw = JudgeAnswer(items=[_judge(quote=quote, file=file)])
+    (item,) = check_quotes((TEST_CRITERION,), raw, DIFF)
+    return item
+
+
+def test_test_criterion_proven_from_a_test_file_is_met() -> None:
+    item = _check_test_criterion("assert divide(1, 0) is None", TEST_FILE)
+
+    assert item.state == "met"
+
+
+def test_test_criterion_with_a_real_quote_from_source_code_is_unverified() -> None:
+    item = _check_test_criterion("return None", CALC)
+
+    assert item.state == "unverified"
+    assert item.reason == "test criterion must be proven from a test file"
+    assert item.file == CALC
+
+
+def test_test_criterion_with_a_quote_missing_from_the_test_file_says_so() -> None:
+    item = _check_test_criterion("return None", TEST_FILE)
+
+    assert item.state == "unverified"
+    assert item.reason == "quote not found in added lines"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tests cover dividing by zero",
+        "Add a TEST for the zero case",
+        "divide has a test",
+        "the tests pass",
+    ],
+)
+def test_any_wording_with_the_word_test_or_tests_is_a_test_criterion(
+    text: str,
+) -> None:
+    raw = JudgeAnswer(items=[_judge(quote="return None", file=CALC)])
+
+    (item,) = check_quotes((Criterion(id="c1", text=text),), raw, DIFF)
+
+    assert item.state == "unverified"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "divide returns None on a zero divisor",
+        "The latest release notes mention it",
+        "Attestation is not required",
+        "contest rules are unchanged",
+    ],
+)
+def test_a_criterion_without_the_word_test_may_be_proven_from_source(
+    text: str,
+) -> None:
+    raw = JudgeAnswer(items=[_judge(quote="return None", file=CALC)])
+
+    (item,) = check_quotes((Criterion(id="c1", text=text),), raw, DIFF)
+
+    assert item.state == "met"
+
+
+def test_not_met_test_criterion_stays_not_met() -> None:
+    raw = JudgeAnswer(items=[_judge(met=False, quote="", file="")])
+
+    (item,) = check_quotes((TEST_CRITERION,), raw, DIFF)
+
+    assert item.state == "not_met"

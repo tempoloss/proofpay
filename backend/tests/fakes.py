@@ -166,6 +166,8 @@ class FakePaymentGateway:
             PayoutStatus(batch_status="SUCCESS", item_status="SUCCESS")
         ]
         self.auth_expires_at = NOW + timedelta(days=29)
+        # The status of one batch id wins over the shared `payout_statuses`.
+        self.batch_statuses: dict[str, PayoutStatus] = {}
 
     def calls_of(self, method: str) -> list[Call]:
         return [call for call in self.calls if call.method == method]
@@ -210,6 +212,10 @@ class FakePaymentGateway:
     async def void(self, auth_id: str, *, request_id: str) -> None:
         self._record("void", request_id, auth_id=auth_id)
 
+    async def refund(self, capture_id: str, *, request_id: str) -> str:
+        self._record("refund", request_id, capture_id=capture_id)
+        return f"REFUND-{capture_id}"
+
     async def payout(
         self,
         email: str,
@@ -231,6 +237,8 @@ class FakePaymentGateway:
 
     async def payout_status(self, batch_id: str) -> PayoutStatus:
         self._record("payout_status", None, batch_id=batch_id)
+        if batch_id in self.batch_statuses:
+            return self.batch_statuses[batch_id]
         if len(self.payout_statuses) > 1:
             return self.payout_statuses.pop(0)
         return self.payout_statuses[0]
@@ -242,6 +250,11 @@ class FakeCodeHost:
     def __init__(self) -> None:
         self.pr_body = "Fixes #1"
         self.head_sha = "a" * 40
+        # Consumed one per pull_request call before `head_sha` takes over.
+        self.head_shas: list[str] = []
+        self.pr_state = "open"
+        self.pr_merged = False
+        self.checked_shas: list[str] = []
         self.check_runs = [
             CheckRun(name="pytest", status="completed", conclusion="success")
         ]
@@ -264,16 +277,19 @@ class FakeCodeHost:
 
     async def pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
         self._record("pull_request")
+        head_sha = self.head_shas.pop(0) if self.head_shas else self.head_sha
         return PullRequest(
             title="Handle division by zero",
             body=self.pr_body,
-            head_sha=self.head_sha,
-            state="open",
+            head_sha=head_sha,
+            state=self.pr_state,
+            merged=self.pr_merged,
             html_url=f"https://github.com/{owner}/{repo}/pull/{number}",
         )
 
     async def checks(self, owner: str, repo: str, sha: str) -> list[CheckRun]:
         self._record("checks")
+        self.checked_shas.append(sha)
         return list(self.check_runs)
 
     async def diff(self, owner: str, repo: str, number: int) -> str:

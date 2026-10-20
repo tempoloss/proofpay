@@ -9,7 +9,8 @@ class PullRequest:
     title: str
     body: str
     head_sha: str
-    state: str
+    state: str  # "open" or "closed"
+    merged: bool
     html_url: str
 
 

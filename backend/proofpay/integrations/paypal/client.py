@@ -6,6 +6,7 @@ PayPal ``name`` and ``debug_id`` only.
 """
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -31,6 +32,10 @@ TOKEN_MARGIN = timedelta(seconds=60)
 # API returns "payer-action" when payment_source.paypal.experience_context is
 # used; the legacy relation is "approve".
 APPROVE_RELS = ("payer-action", "approve")
+# A refund that ends in one of these did not give the money back.
+REFUND_FAILED_STATES = frozenset({"FAILED", "CANCELLED"})
+# The original payout named by a "duplicate sender_batch_id" error.
+_PAYOUT_HREF = re.compile(r"/v1/payments/payouts/([A-Za-z0-9_-]+)/?$")
 
 log = structlog.get_logger(__name__)
 
@@ -50,6 +55,22 @@ def _bad_response() -> UpstreamError:
         code="PAYPAL_BAD_RESPONSE",
         detail="PayPal returned an unexpected response",
     )
+
+
+def _original_payout_id(error_body: dict[str, Any]) -> str | None:
+    """Batch id from the HATEOAS link of a duplicate-sender_batch_id error."""
+    links = error_body.get("links")
+    if not isinstance(links, list):
+        return None
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        href = link.get("href")
+        if link.get("method", "GET") == "GET" and isinstance(href, str):
+            match = _PAYOUT_HREF.search(href)
+            if match is not None:
+                return match[1]
+    return None
 
 
 class PayPalClient:
@@ -155,6 +176,26 @@ class PayPalClient:
             request_id=request_id,
         )
 
+    async def refund(self, capture_id: str, *, request_id: str) -> str:
+        # An empty body refunds the whole capture.
+        data = await self._request(
+            "POST",
+            f"/v2/payments/captures/{capture_id}/refund",
+            json={},
+            request_id=request_id,
+        )
+        try:
+            refund_id = str(data["id"])
+        except KeyError as exc:
+            raise _bad_response() from exc
+        if data.get("status") in REFUND_FAILED_STATES:
+            raise UpstreamError(
+                code="PAYPAL_REFUND_FAILED",
+                detail="PayPal did not refund the capture",
+                params={"status": data["status"]},
+            )
+        return refund_id
+
     async def payout(
         self,
         email: str,
@@ -179,9 +220,19 @@ class PayPalClient:
                 }
             ],
         }
-        data = await self._request(
-            "POST", "/v1/payments/payouts", json=body, request_id=request_id
-        )
+        try:
+            data = await self._request(
+                "POST", "/v1/payments/payouts", json=body, request_id=request_id
+            )
+        except UpstreamError as exc:
+            # A reused sender_batch_id is rejected with a link to the original
+            # payout. That payout is ours: hand its id back instead of failing,
+            # so the caller watches it and never pays again.
+            existing = exc.params.get("existing_batch_id")
+            if existing is None:
+                raise
+            log.info("paypal_payout_already_exists", batch_id=existing)
+            return str(existing)
         try:
             return str(data["batch_header"]["payout_batch_id"])
         except (KeyError, TypeError) as exc:
@@ -283,8 +334,12 @@ class PayPalClient:
         name = body.get("name") or body.get("error") or "UNKNOWN"
         debug_id = body.get("debug_id") or response.headers.get("PayPal-Debug-Id")
         log.warning("paypal_error", name=name, debug_id=debug_id)
+        params: dict[str, Any] = {"name": name, "debug_id": debug_id}
+        existing = _original_payout_id(body)
+        if existing is not None:
+            params["existing_batch_id"] = existing
         return UpstreamError(
             code="PAYPAL_ERROR",
             detail=f"PayPal rejected the request ({name})",
-            params={"name": name, "debug_id": debug_id},
+            params=params,
         )

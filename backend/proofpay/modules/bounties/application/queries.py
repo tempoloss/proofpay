@@ -61,6 +61,7 @@ class VerdictItemView:
 class VerdictView:
     outcome: OutcomeName
     ci: CiName
+    head_sha: str
     items: tuple[VerdictItemView, ...]
 
 
@@ -131,6 +132,7 @@ def _verdict_view(verdict: Verdict | None) -> VerdictView | None:
     return VerdictView(
         outcome=verdict.outcome.value,
         ci=verdict.ci.value,
+        head_sha=verdict.head_sha,
         items=tuple(
             VerdictItemView(
                 criterion_id=item.criterion_id,

@@ -8,6 +8,7 @@ import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
+from datetime import timedelta
 from typing import Protocol
 
 from proofpay.modules.bounties.domain.answers import JudgeAnswer, JudgeItem
@@ -29,6 +30,23 @@ MIN_QUOTE_CHARS = 8
 
 MISSING_CRITERION_REASON = "criterion missing from judge answer"
 QUOTE_NOT_FOUND_REASON = "quote not found in added lines"
+TEST_FILE_REQUIRED_REASON = "test criterion must be proven from a test file"
+
+# A review that still sees a pending CI this long after the pull request was
+# submitted goes to a human instead of waiting for ever.
+CI_WAIT_LIMIT = timedelta(minutes=60)
+CI_TIMEOUT_REASON = "CI did not finish within 60 minutes"
+
+_TEST_DIRS = frozenset({"test", "tests", "__tests__", "spec", "specs"})
+_TEST_FILE_NAME = re.compile(
+    r"test_.*\.py"
+    r"|.*_test\.py"
+    r"|.*_test\.go"
+    r"|.*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs)"
+    r"|.*Test\.java"
+    r"|.*Tests\.cs"
+)
+_TEST_CRITERION = re.compile(r"\btests?\b", re.IGNORECASE)
 
 ALLOWED: dict[BountyStatus, frozenset[BountyStatus]] = {
     BountyStatus.DRAFT: frozenset(
@@ -70,6 +88,18 @@ def transition(bounty: Bounty, new: BountyStatus) -> Bounty:
             params={"from": bounty.status.value, "to": new.value},
         )
     return replace(bounty, status=new)
+
+
+def is_test_path(path: str) -> bool:
+    """Whether `path` (a diff path, forward slashes) is a test file.
+
+    A file counts when a directory of its path is a conventional test
+    directory, or its name follows a test naming convention.
+    """
+    *directories, name = path.split("/")
+    return bool(_TEST_DIRS.intersection(directories)) or (
+        _TEST_FILE_NAME.fullmatch(name) is not None
+    )
 
 
 def added_lines(diff: str) -> dict[str, list[str]]:
@@ -154,20 +184,28 @@ def _check_criterion(
             file=answer.file,
             reason=answer.reason,
         )
-    if _quote_in_added_lines(answer.quote, added.get(answer.file, [])):
+    if not _quote_in_added_lines(answer.quote, added.get(answer.file, [])):
         return VerdictItem(
             criterion_id=criterion.id,
-            state="met",
+            state="unverified",
             quote=answer.quote,
             file=answer.file,
-            reason=answer.reason,
+            reason=QUOTE_NOT_FOUND_REASON,
+        )
+    if _TEST_CRITERION.search(criterion.text) and not is_test_path(answer.file):
+        return VerdictItem(
+            criterion_id=criterion.id,
+            state="unverified",
+            quote=answer.quote,
+            file=answer.file,
+            reason=TEST_FILE_REQUIRED_REASON,
         )
     return VerdictItem(
         criterion_id=criterion.id,
-        state="unverified",
+        state="met",
         quote=answer.quote,
         file=answer.file,
-        reason=QUOTE_NOT_FOUND_REASON,
+        reason=answer.reason,
     )
 
 

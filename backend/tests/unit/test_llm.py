@@ -1,13 +1,18 @@
 """The model chain, offline: fake backends return raw JSON text."""
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from google.genai import errors as genai_errors
+from google.genai.models import AsyncModels
 from pydantic import BaseModel, SecretStr
+from structlog.testing import capture_logs
 
 from proofpay.integrations.llm.client import (
     ChainedModel,
+    GeminiBackend,
     OpenAICompatBackend,
     build_structured_model,
 )
@@ -144,3 +149,117 @@ async def test_openai_compatible_http_error_moves_the_chain_on() -> None:
 
     with pytest.raises(LLMUnavailable):
         await chain.ask("sys", "prompt", Answer)
+
+
+class FlakyGemini:
+    """Stands in for `generate_content`: plays a script of errors, then text."""
+
+    def __init__(self, script: list[int | str]) -> None:
+        self.script = script
+        self.calls = 0
+
+    async def __call__(self, **_: object) -> SimpleNamespace:
+        step = self.script[self.calls]
+        self.calls += 1
+        if isinstance(step, int):
+            raise genai_errors.APIError(
+                step, {"error": {"code": step, "message": "boom", "status": "X"}}
+            )
+        return SimpleNamespace(text=step)
+
+
+def _gemini(
+    monkeypatch: pytest.MonkeyPatch, script: list[int | str]
+) -> tuple[GeminiBackend, FlakyGemini, list[float]]:
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    backend = GeminiBackend("k", "m", sleep=sleep)
+    flaky = FlakyGemini(script)
+
+    async def generate_content(
+        _models: AsyncModels, **kwargs: object
+    ) -> SimpleNamespace:
+        return await flaky(**kwargs)
+
+    monkeypatch.setattr(AsyncModels, "generate_content", generate_content)
+    return backend, flaky, slept
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+async def test_gemini_retries_a_transient_error_after_one_second(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    backend, flaky, slept = _gemini(monkeypatch, [status, GOOD])
+
+    answer = await ChainedModel([backend]).ask("sys", "prompt", Answer)
+
+    assert answer == Answer(verdict="ok", score=3)
+    assert (flaky.calls, slept) == (2, [1.0])
+
+
+async def test_gemini_backs_off_one_then_three_seconds_and_gives_up_after_two_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, flaky, slept = _gemini(monkeypatch, [503, 503, 503, GOOD])
+
+    with pytest.raises(LLMUnavailable):
+        await ChainedModel([backend]).ask("sys", "prompt", Answer)
+
+    assert (flaky.calls, slept) == (3, [1.0, 3.0])
+
+
+async def test_gemini_second_retry_can_still_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, flaky, slept = _gemini(monkeypatch, [429, 503, GOOD])
+
+    answer = await ChainedModel([backend]).ask("sys", "prompt", Answer)
+
+    assert answer == Answer(verdict="ok", score=3)
+    assert (flaky.calls, slept) == (3, [1.0, 3.0])
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+async def test_gemini_does_not_retry_other_client_errors(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    backend, flaky, slept = _gemini(monkeypatch, [status, GOOD])
+
+    with pytest.raises(LLMUnavailable):
+        await ChainedModel([backend]).ask("sys", "prompt", Answer)
+
+    assert (flaky.calls, slept) == (1, [])
+
+
+async def test_failure_log_has_class_and_status_but_no_url_and_is_cut() -> None:
+    message = (
+        "gateway https://secret-gateway.example/v1/chat?key=abc failed " + "x" * 500
+    )
+    chain = ChainedModel([FakeBackend("fallback", RuntimeError(message))])
+
+    with capture_logs() as logs, pytest.raises(LLMUnavailable):
+        await chain.ask("sys", "prompt", Answer)
+
+    [entry] = [item for item in logs if item["event"] == "llm_backend_failed"]
+    assert entry["error"] == "RuntimeError"
+    assert "secret-gateway" not in str(logs)
+    assert "<url>" in entry["message"]
+    assert len(entry["message"]) <= 200
+
+
+async def test_failure_log_reports_the_http_status_of_a_gateway_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "no"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    chain = ChainedModel([OpenAICompatBackend(http, "https://gw.example/v1", "m", "k")])
+
+    with capture_logs() as logs, pytest.raises(LLMUnavailable):
+        await chain.ask("sys", "prompt", Answer)
+
+    [entry] = [item for item in logs if item["event"] == "llm_backend_failed"]
+    assert (entry["error"], entry["status"]) == ("HTTPStatusError", 401)
+    assert "gw.example" not in str(logs)

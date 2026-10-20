@@ -72,6 +72,7 @@ class EventKind(StrEnum):
     CAPTURED = "captured"
     PAYOUT_SENT = "payout_sent"
     PAYOUT_FAILED = "payout_failed"
+    REFUNDED = "refunded"
     PAID = "paid"
     REJECTED = "rejected"
     NEEDS_HUMAN = "needs_human"
@@ -105,6 +106,7 @@ class Verdict:
     outcome: Outcome
     items: tuple[VerdictItem, ...]
     ci: CiState
+    head_sha: str  # the commit whose CI and diff were judged; "" on old rows
 
 
 @dataclass(frozen=True, slots=True)

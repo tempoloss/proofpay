@@ -97,6 +97,9 @@ class VerdictItem(BaseModel):
 class Verdict(BaseModel):
     outcome: queries.OutcomeName = Field(description="pass, fail or needs_human")
     ci: queries.CiName = Field(description="green, red or pending")
+    head_sha: str = Field(
+        description="Commit whose CI result and diff were judged; empty on old verdicts"
+    )
     items: list[VerdictItem] = Field(description="One entry per criterion")
 
     @classmethod
@@ -104,6 +107,7 @@ class Verdict(BaseModel):
         return cls(
             outcome=view.outcome,
             ci=view.ci,
+            head_sha=view.head_sha,
             items=[
                 VerdictItem(
                     criterion_id=item.criterion_id,

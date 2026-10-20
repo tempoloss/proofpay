@@ -451,6 +451,10 @@
             ],
             "type": "string"
           },
+          "head_sha": {
+            "description": "Commit whose CI result and diff were judged; empty on old verdicts",
+            "type": "string"
+          },
           "items": {
             "description": "One entry per criterion",
             "items": {
@@ -470,6 +474,7 @@
         },
         "required": [
           "ci",
+          "head_sha",
           "items",
           "outcome"
         ],

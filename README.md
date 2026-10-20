@@ -30,6 +30,18 @@ a **verbatim quote**, and the file the quote comes from. Code then checks the an
   - otherwise `pass` -> the money moves.
 - CI state comes from GitHub check runs of the PR head commit: no runs is `red`, any unfinished
   run is `pending` (re-checked every 30 s), all `success`/`skipped`/`neutral` is `green`.
+  CI still `pending` 60 minutes after the pull request was submitted sends the claim to
+  `needs_human` (`CI did not finish within 60 minutes`).
+- **The judged commit is the one CI checked.** After reading the check runs of the head commit and
+  fetching the diff, the review fetches the pull request again. If the head moved (a push), nothing
+  is judged: the review is queued again so the new head's CI is awaited. A pull request closed
+  without a merge rejects the claim (`pull request closed`). The verdict stores the judged commit
+  (`head_sha`).
+- **Tests must come from test files.** A criterion whose text contains the word `test` or `tests`
+  is `met` only if its verified quote comes from a test file (`is_test_path`: a `test/`, `tests/`,
+  `__tests__/`, `spec/` or `specs/` directory, or a name like `test_*.py`, `*_test.py`,
+  `*_test.go`, `*.test.ts`, `*.spec.js`, `*Test.java`, `*Tests.cs`). A quote from source code
+  leaves it `unverified`: `test criterion must be proven from a test file`.
 - A diff longer than `MAX_DIFF_CHARS` (200,000 characters) is not sent to the model at all: the
   bounty goes to `needs_human`. So does any GitHub or model failure during review.
 
@@ -49,7 +61,7 @@ stateDiagram-v2
     in_review --> needs_human: unverified or capture failed
     needs_human --> released: funder releases
     needs_human --> funded: funder rejects
-    needs_human --> cancelled: cancel, authorization voided
+    needs_human --> cancelled: cancel, hold voided or capture refunded
     funded --> cancelled: cancel, authorization voided
     released --> paid: payout SUCCESS
     released --> needs_human: payout failed
@@ -72,8 +84,9 @@ stateDiagram-v2
 5. **Release.** On `pass` the authorization is captured, then one Payouts item is sent to the
    solver's PayPal e-mail; a job polls the batch every 30 s until `SUCCESS` (`paid`).
 6. **Otherwise.** `fail` reopens the bounty for another attempt; `needs_human` waits for the funder
-   (`decide`: `release` or `reject`). `cancel` voids an unclaimed authorization. A job runs every
-   10 minutes and voids authorizations that end within 24 hours (`expired`).
+   (`decide`: `release` or `reject`). `cancel` voids an unclaimed authorization; once the money
+   is captured it refunds it instead, unless a payout is pending. A job runs every 10 minutes and
+   voids authorizations that end within 24 hours (`expired`).
 
 ## PayPal APIs used
 
@@ -86,6 +99,7 @@ All calls are in `backend/proofpay/integrations/paypal/client.py`, one long-live
 | Orders v2 | `POST /v2/checkout/orders/{id}/authorize` | Hold the funds after the funder approves |
 | Payments v2 | `POST /v2/payments/authorizations/{id}/capture` | Take the held money (`final_capture: true`) |
 | Payments v2 | `POST /v2/payments/authorizations/{id}/void` | Release the hold on cancel or expiry |
+| Payments v2 | `POST /v2/payments/captures/{id}/refund` | Full refund of captured money when the funder cancels after a dead payout |
 | Payouts v1 | `POST /v1/payments/payouts` | Pay the solver by e-mail, one item per batch |
 | Payouts v1 | `GET /v1/payments/payouts/{batch_id}` | Poll the batch and item status |
 
@@ -97,13 +111,39 @@ All calls are in `backend/proofpay/integrations/paypal/client.py`, one long-live
 | authorize | `auth-{bounty_id}` |
 | capture | `capture-{bounty_id}` |
 | void | `void-{bounty_id}` |
-| payout | `payout-{claim_id}` (also used as `sender_batch_id`) |
+| refund | `refund-{bounty_id}` |
+| payout | `payout-{claim_id}` (also `sender_batch_id`); after n dead batches `payout-{claim_id}-{n+1}` |
 
-A retry after a timeout, a crashed worker or a repeated job sends the same id, so PayPal replays
-the first result instead of performing the action again. On our side the second line of defence is
-the database: capture and payout run under a row lock on the bounty, the capture id and the payout
-batch id are stored right after each call commits, and a bounty that already has either is never
-captured or paid again (see Safety).
+A retry after a timeout, a crashed worker or a repeated job sends the same id. What PayPal does
+with it, from its documentation (checked 20 Oct 2026, not yet exercised against the sandbox):
+
+- **Orders v2 and Payments v2** (create, authorize, capture, void, refund): a call that repeats a
+  `PayPal-Request-Id` does not act again; PayPal returns the *latest status* of the earlier
+  request (`200 OK` for an idempotent replay, e.g. capture returns the original capture with
+  `COMPLETED`). Two simultaneous calls with one id may make the second fail; void and refund
+  document `409` for "a previous call for the given resource is in progress". The refund page
+  says an id can be reused for up to 45 days. Sources:
+  https://developer.paypal.com/api/rest/reference/idempotency/ ,
+  https://developer.paypal.com/api/rest/requests/#paypal-request-id ,
+  https://developer.paypal.com/api/payments/v2/ , https://developer.paypal.com/api/orders/v2/
+- **Payouts v1**: the header is accepted ("the server stores keys for 30 days"), but the Payouts
+  reference describes duplicates through `sender_batch_id`: a `sender_batch_id` used in the last
+  30 days is **rejected with an error, not replayed**; the error "shows the duplicate
+  `sender_batch_id` and includes a HATEOAS link to the original payout". A `5xx` may be retried
+  with the same `sender_batch_id`, and "the API completes a payment only once for a
+  `sender_batch_id` used within 30 days". Source:
+  https://developer.paypal.com/api/payments.payouts-batch/v1/payouts-post
+
+So a payout POST may answer a repeat with an error instead of the original batch. The client
+reads the batch id from the HATEOAS link of that error (a `GET .../v1/payments/payouts/{id}`
+link) and returns it as if the call had succeeded; the bounty then follows that batch through
+`poll_payout` like any other. Without such a link the error is an ordinary failure: the bounty
+parks in `needs_human` and the funder's retry reuses the same ids, so PayPal can still only answer
+with the original or a duplicate error. A payout is never sent under a new id unless the previous
+batch was reported dead. On our side the second line of defence is the database: capture and
+payout run under a row lock on the bounty, the capture id and the payout batch id are stored right
+after each call commits, and a bounty that already has either is never captured or paid again
+(see Safety).
 
 Sandbox only; production would use PayPal Commerce Platform for marketplace payouts.
 `PROOFPAY_PAYPAL_ENV=live` makes the PayPal client refuse to be built
@@ -117,7 +157,9 @@ never logged.
 and returns a validated Pydantic object or raises `LLMUnavailable`.
 
 - Primary: Gemini through `google-genai` with `response_mime_type="application/json"`, the Pydantic
-  class as `response_schema` and low thinking level. Model name: `PROOFPAY_LLM_MODEL`.
+  class as `response_schema` and low thinking level. Model name: `PROOFPAY_LLM_MODEL` (default
+  `gemini-3-flash-preview`). HTTP 429, 500, 502, 503 and 504 are retried twice, after 1 s and
+  after 3 s; other 4xx answers are not retried.
 - Optional fallback: any OpenAI-compatible endpoint (`POST {base_url}/chat/completions`, JSON mode),
   used only when `PROOFPAY_FALLBACK_BASE_URL`, `PROOFPAY_FALLBACK_MODEL` and
   `PROOFPAY_FALLBACK_API_KEY` are all set. A backend that errors or returns JSON that does not
@@ -128,7 +170,8 @@ and returns a validated Pydantic object or raises `LLMUnavailable`.
   block, and the system prompt tells the model never to follow instructions found in that data.
   Even if a prompt injection succeeds, it cannot make a quote appear in the diff, and the quote
   check is code (`prompts.py`, `rules.py`).
-- Prompts and keys are not logged.
+- Prompts and keys are not logged. A failed model call logs the error class, the HTTP status and
+  the first 200 characters of the message with every URL replaced by `<url>`.
 
 ## For agents: MCP
 
@@ -163,7 +206,7 @@ with `urn:proofpay:error:` types.
 | POST | `/bounties` | funder | `{issue_url, amount_usd, done_when}`; returns `funder_key` once |
 | POST | `/bounties/{id}/fund` | funder, `X-Funder-Key` | `{criteria: [{id, text}]}`; returns `{approve_url}` |
 | POST | `/bounties/{id}/decide` | funder, `X-Funder-Key` | `{decision: "release" \| "reject"}`, only from `needs_human` |
-| POST | `/bounties/{id}/cancel` | funder, `X-Funder-Key` | voids a held authorization |
+| POST | `/bounties/{id}/cancel` | funder, `X-Funder-Key` | voids a held authorization; after capture refunds the money, unless a payout batch is pending (`409 PAYOUT_IN_FLIGHT`) |
 | POST | `/bounties/{id}/claims` | solver | `{solver_name, solver_kind: "human" \| "agent", paypal_email}` |
 | POST | `/claims/{id}/submit` | solver | `{pr_url}` |
 
@@ -252,7 +295,7 @@ Variables (see `deploy/env.example`; every setting has the `PROOFPAY_` prefix, s
 | `PROOFPAY_PAYPAL_CLIENT_ID`, `PROOFPAY_PAYPAL_CLIENT_SECRET` | Sandbox REST app credentials |
 | `PROOFPAY_PAYPAL_ENV`, `PROOFPAY_ALLOW_LIVE` | `sandbox` by default; live is refused without the flag |
 | `PROOFPAY_GITHUB_TOKEN` | Optional; read-only token for public repositories (higher rate limit) |
-| `PROOFPAY_GEMINI_API_KEY`, `PROOFPAY_LLM_MODEL` | Primary model |
+| `PROOFPAY_GEMINI_API_KEY`, `PROOFPAY_LLM_MODEL` | Primary model (default `gemini-3-flash-preview`) |
 | `PROOFPAY_FALLBACK_BASE_URL`, `PROOFPAY_FALLBACK_MODEL`, `PROOFPAY_FALLBACK_API_KEY` | Optional fallback model |
 | `PROOFPAY_PUBLIC_URL` | Where PayPal sends the browser back (default `http://localhost:5273`) |
 | `PROOFPAY_MAX_BOUNTY_USD`, `PROOFPAY_MCP_PORT` | Limits and the MCP port (default 500, 8001) |
@@ -295,22 +338,29 @@ docker compose -f deploy/compose.prod.yaml up -d
 - **Never pay twice.** Stable PayPal request ids (above); `capture` and `payout` run under
   `SELECT ... FOR UPDATE` on the bounty row; the capture id and the payout batch id are committed
   right after each PayPal call; a bounty already `released` with a payout batch, or `paid`, returns
-  without touching PayPal; a payout that failed after capture is retried from `needs_human` only
-  by the funder, and never re-sent if a batch already exists.
+  without touching PayPal.
+- **Captured money always has a way out.** A payout PayPal reports dead (item `FAILED`,
+  `RETURNED`, `BLOCKED`, `REFUNDED`, `REVERSED`, or batch `DENIED`, `CANCELED`) frees the claim of
+  its batch and parks the bounty in `needs_human` (event `payout_failed`, `definitive: true`). The
+  funder then either releases again, which sends a new payout under `payout-{claim_id}-2`
+  (`-3`, ... after each further dead batch; a dead batch is never sent again), or cancels, which
+  refunds the capture (`refund-{bounty_id}`). `UNCLAIMED` and `ONHOLD` are not dead, because PayPal
+  can still deliver an unclaimed payout for 30 days: the batch is kept, releasing only polls it,
+  and cancel answers `409 PAYOUT_IN_FLIGHT`, as it does while a batch is pending. A payout request
+  that raises (timeout, 5xx) is not a dead batch either: the next attempt reuses the same id.
 - **Jobs.** A job is deferred only after the commit it depends on, and a step already queued for
   the same claim is not queued twice. Stale jobs find a different status and exit.
-- **Escalation.** Whatever the code cannot prove goes to `needs_human`: unverified quotes, an
-  oversized diff, GitHub or model outages, a failed capture, a failed payout. Money does not move
-  by default.
+- **Escalation.** Whatever the code cannot prove goes to `needs_human`: unverified quotes, a test
+  criterion proven from a non-test file, an oversized diff, CI still pending after 60 minutes,
+  GitHub or model outages, a failed capture, a failed payout. Money does not move by default.
 - **Funder key.** Random, shown once, stored only as SHA-256, compared in constant time.
 - **PR checks.** The PR must belong to the bounty's repository and reference the issue
   (`#12` does not count for issue 1).
 - **Secrets.** Held in `SecretStr`, never logged; the repository is scanned by
   `scripts/check_leaks.sh` in CI.
 
-Not done: refunds of money that was already captured and a dispute process (a captured bounty
-cannot be cancelled or rejected; a failed payout is resolved by the funder through
-`needs_human`); payouts to anyone but the e-mail given at claim time; live PayPal.
+Not done: a dispute process after a successful payout, partial refunds, payouts to anyone but the
+e-mail given at claim time, live PayPal.
 
 ## License
 

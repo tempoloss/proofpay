@@ -285,6 +285,10 @@ export type Verdict = {
      */
     ci: 'green' | 'red' | 'pending';
     /**
+     * Commit whose CI result and diff were judged; empty on old verdicts
+     */
+    head_sha: string;
+    /**
      * One entry per criterion
      */
     items: Array<VerdictItem>;
