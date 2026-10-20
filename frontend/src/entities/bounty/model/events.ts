@@ -11,6 +11,7 @@ import {
   Hand,
   Lock,
   type LucideIcon,
+  RotateCcw,
   Scale,
   Send,
   TriangleAlert,
@@ -92,7 +93,15 @@ export function describeEvent(event: BountyEvent): EventLine {
         icon: TriangleAlert,
         tone: "fail",
         title: "Payout failed",
-        detail: text(detail.reason),
+        detail: text(detail.item_status) ?? text(detail.reason),
+        href: null,
+      };
+    case "refunded":
+      return {
+        icon: RotateCcw,
+        tone: "neutral",
+        title: "Refunded to the funder",
+        detail: text(detail.refund_id),
         href: null,
       };
     case "paid":

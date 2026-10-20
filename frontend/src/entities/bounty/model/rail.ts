@@ -26,16 +26,25 @@ const lastAt = (events: readonly BountyEvent[], kind: string): string | null => 
 export function railSteps(status: BountyStatus, events: readonly BountyEvent[]): RailStep[] {
   const funded = lastAt(events, "funded");
   const captured = lastAt(events, "captured");
+  const refunded = lastAt(events, "refunded");
   const paid = lastAt(events, "paid");
   const closed = status === "cancelled" || status === "expired";
   const settle = (state: StepState): StepState => (closed && state !== "done" ? "void" : state);
+  // A cancelled or expired bounty no longer holds money: an uncaptured hold was voided.
+  const holdReleased = closed && !captured;
 
   return [
     {
       key: "held",
       label: "Authorized",
-      caption: status === "awaiting_payment" ? "Waiting for PayPal approval" : "PayPal holds the funds",
-      state: settle(funded ? "done" : status === "awaiting_payment" ? "active" : "pending"),
+      caption: holdReleased
+        ? funded
+          ? "Hold voided, nothing charged"
+          : "Never funded"
+        : status === "awaiting_payment"
+          ? "Waiting for PayPal approval"
+          : "PayPal holds the funds",
+      state: holdReleased ? "void" : funded ? "done" : status === "awaiting_payment" ? "active" : "pending",
       at: funded,
     },
     {
@@ -56,9 +65,9 @@ export function railSteps(status: BountyStatus, events: readonly BountyEvent[]):
     {
       key: "captured",
       label: "Captured",
-      caption: "Held funds taken",
-      state: settle(captured ? "done" : "pending"),
-      at: captured,
+      caption: refunded ? "Refunded to the funder" : "Held funds taken",
+      state: refunded ? "void" : settle(captured ? "done" : "pending"),
+      at: refunded ?? captured,
     },
     {
       key: "paid",

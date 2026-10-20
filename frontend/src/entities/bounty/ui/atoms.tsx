@@ -50,12 +50,13 @@ export function RepoRef({
   href?: string;
   className?: string;
 }) {
+  // One text node group: as separate flex items the parts would get the gap between them.
   const label = (
-    <>
+    <span>
       {owner}/{repo}
       <span className="text-faint">#</span>
       {number}
-    </>
+    </span>
   );
   if (!href) return <span className={cn("font-mono text-[13px] text-muted", className)}>{label}</span>;
   return (
@@ -64,12 +65,15 @@ export function RepoRef({
       target="_blank"
       rel="noreferrer"
       className={cn(
-        "group inline-flex items-center gap-1 font-mono text-[13px] text-muted transition-colors hover:text-fg",
+        "group inline-flex items-center font-mono text-[13px] text-muted transition-colors hover:text-fg",
         className,
       )}
     >
       {label}
-      <ArrowUpRight className="size-3.5 opacity-50 transition-opacity group-hover:opacity-100" aria-hidden />
+      <ArrowUpRight
+        className="ml-1 size-3.5 opacity-50 transition-opacity group-hover:opacity-100"
+        aria-hidden
+      />
     </a>
   );
 }

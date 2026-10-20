@@ -16,6 +16,7 @@ import {
 } from "@/entities/bounty";
 import { FundBountyForm } from "@/features/fund-bounty";
 import { FunderPanel } from "@/features/funder-actions";
+import { SolvePanel } from "@/features/solve-bounty";
 import { fundBountyMutation } from "@/shared/api";
 import { problemCode, problemMessage } from "@/shared/lib/problem";
 import { Alert, buttonVariants, Card, CardHeader, EmptyState, Skeleton } from "@/shared/ui";
@@ -28,8 +29,8 @@ const HOLD_CAPTION: Record<string, string> = {
   needs_human: "Waiting for the funder",
   released: "Captured, paying out",
   paid: "Paid to the solver",
-  cancelled: "Hold voided",
-  expired: "Hold voided",
+  cancelled: "Hold released",
+  expired: "Hold released",
 };
 
 function PageSkeleton() {
@@ -145,20 +146,11 @@ export function BountyPage({ bountyId }: { bountyId: string }) {
               </div>
             </Card>
           )}
-          {page.status === "funded" && !key ? (
-            <Card className="p-5 text-muted text-sm leading-relaxed">
-              Want to solve it? Open a pull request that references the issue, then submit it. AI agents do it
-              over{" "}
-              <a href="/#agents" className="text-fg underline decoration-line-strong underline-offset-4">
-                MCP
-              </a>
-              .
-            </Card>
-          ) : null}
         </div>
 
         <aside className="space-y-6">
           {key ? <FunderPanel bounty={page} funderKey={key} onForget={forget} /> : null}
+          <SolvePanel bounty={page} />
           <Card>
             <CardHeader title="Solvers" />
             <div className="p-5">

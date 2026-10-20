@@ -41,12 +41,16 @@ describe("railSteps", () => {
     expect(steps[2]?.at).toBe("2026-10-20T10:04:00Z");
   });
 
-  it("voids the steps that never happened when a funded bounty is cancelled", () => {
-    expect(states("cancelled", [event("funded", 1), event("cancelled", 2)])).toEqual([
-      "done",
-      "void",
-      "void",
-      "void",
-    ]);
+  it("shows a cancelled bounty's hold as released, not as money still held", () => {
+    const steps = railSteps("cancelled", [event("funded", 1), event("cancelled", 2)]);
+    expect(steps.map((step) => step.state)).toEqual(["void", "void", "void", "void"]);
+    expect(steps[0]?.caption).toBe("Hold voided, nothing charged");
+  });
+
+  it("marks a captured bounty that was refunded as refunded, not captured", () => {
+    const events = [event("funded", 1), event("verdict", 3), event("captured", 4), event("refunded", 7)];
+    const steps = railSteps("cancelled", events);
+    expect(steps.map((step) => step.state)).toEqual(["done", "done", "void", "void"]);
+    expect(steps[2]?.caption).toBe("Refunded to the funder");
   });
 });

@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, CircleX, ExternalLink, KeyRound, Send } from "lucide-react";
+import { Ban, CircleX, ExternalLink, KeyRound, RotateCcw, Send } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import type { BountyView } from "@/entities/bounty";
 import {
@@ -17,6 +17,13 @@ const CONFIRM_LABEL: Record<Action, string> = {
   release: "Confirm: capture and pay",
   reject: "Confirm: reject the submission",
   cancel: "Confirm: cancel and void",
+};
+
+/** Once the money is captured, release can only resend the payout and cancel becomes a refund. */
+const CAPTURED_CONFIRM_LABEL: Record<Action, string> = {
+  release: "Confirm: send the payout",
+  reject: CONFIRM_LABEL.reject,
+  cancel: "Confirm: refund the captured money",
 };
 
 /** Funder controls; shown only in the browser that holds the funder key. */
@@ -80,7 +87,7 @@ export function FunderPanel({
       onClick={() => run(action)}
     >
       {icon}
-      {armed === action ? CONFIRM_LABEL[action] : label}
+      {armed === action ? (captured ? CAPTURED_CONFIRM_LABEL : CONFIRM_LABEL)[action] : label}
     </Button>
   );
 
@@ -101,7 +108,14 @@ export function FunderPanel({
     );
   }
   if (bounty.status === "needs_human") {
-    actions.push(actionButton("release", "Release payment", <Send aria-hidden />, "proof"));
+    actions.push(
+      actionButton(
+        "release",
+        captured ? "Retry the payout" : "Release payment",
+        <Send aria-hidden />,
+        "proof",
+      ),
+    );
     if (!captured)
       actions.push(actionButton("reject", "Reject the submission", <CircleX aria-hidden />, "danger"));
   }
@@ -109,9 +123,16 @@ export function FunderPanel({
     bounty.status === "draft" ||
     bounty.status === "awaiting_payment" ||
     bounty.status === "funded" ||
-    (bounty.status === "needs_human" && !captured);
+    bounty.status === "needs_human";
   if (cancellable)
-    actions.push(actionButton("cancel", "Cancel the bounty", <Ban aria-hidden />, "secondary"));
+    actions.push(
+      actionButton(
+        "cancel",
+        captured ? "Refund to me" : "Cancel the bounty",
+        captured ? <RotateCcw aria-hidden /> : <Ban aria-hidden />,
+        "secondary",
+      ),
+    );
 
   return (
     <Card>
@@ -129,7 +150,7 @@ export function FunderPanel({
         {bounty.status === "needs_human" ? (
           <p className="text-faint text-xs leading-relaxed">
             {captured
-              ? "The money is captured but the payout failed. Release retries the same payout; it never pays twice."
+              ? "The money is captured but the payout did not arrive. Retry it (a failed payout is never sent twice) or refund the money to yourself."
               : "The proof is incomplete. Read the verdict, then release the payment or reject the submission."}
           </p>
         ) : null}
