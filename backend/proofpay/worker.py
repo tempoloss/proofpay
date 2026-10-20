@@ -10,12 +10,14 @@ opening a request scope of the container::
 """
 
 import asyncio
+import logging
 import sys
 
 import procrastinate
 
 from proofpay.di import build_worker_container
 from proofpay.settings import Settings
+from proofpay.shared.logging import setup_logging
 
 
 def _plain_dsn(url: str) -> str:
@@ -50,6 +52,12 @@ def main() -> None:
     On Windows the default event loop (Proactor) is incompatible with psycopg
     in async mode; production runs on Linux, where the default loop stays.
     """
+    setup_logging(json=not Settings().debug)
+    # procrastinate reports job starts, results and retries through the
+    # standard logging module; without a handler the worker runs silently.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
     with asyncio.Runner(loop_factory=loop_factory) as runner:
         runner.run(_serve())
