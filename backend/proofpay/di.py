@@ -8,6 +8,7 @@ the HTTP application and the background worker (which has no request).
 from dishka import AsyncContainer, make_async_container
 from dishka.integrations.litestar import LitestarProvider
 
+from proofpay.integrations.providers import IntegrationsProvider
 from proofpay.modules.registry import all_providers
 from proofpay.shared.di import InfraProvider, SessionProvider
 
@@ -17,6 +18,7 @@ def build_container() -> AsyncContainer:
     return make_async_container(
         InfraProvider(),
         SessionProvider(),
+        IntegrationsProvider(),
         LitestarProvider(),
         *all_providers(),
     )
@@ -27,5 +29,6 @@ def build_worker_container() -> AsyncContainer:
     return make_async_container(
         InfraProvider(),
         SessionProvider(),
+        IntegrationsProvider(),
         *all_providers(),
     )
