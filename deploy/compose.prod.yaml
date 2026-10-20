@@ -1,0 +1,76 @@
+# Production composition: Postgres, API, worker, MCP, static web (nginx).
+# Secrets come from the env file; see deploy/env.example.
+
+name: proofpay
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    env_file:
+      - path: ${PROOFPAY_ENV_FILE:-/etc/proofpay/env}
+        required: true
+    environment:
+      POSTGRES_USER: proofpay
+      POSTGRES_DB: proofpay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proofpay -d proofpay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: deploy/Dockerfile
+    image: proofpay-backend:latest
+    restart: unless-stopped
+    env_file:
+      - path: ${PROOFPAY_ENV_FILE:-/etc/proofpay/env}
+        required: true
+    environment:
+      PROOFPAY_PUBLIC_URL: https://proof.an8kk.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    image: proofpay-backend:latest
+    command: proofpay-worker
+    restart: unless-stopped
+    env_file:
+      - path: ${PROOFPAY_ENV_FILE:-/etc/proofpay/env}
+        required: true
+    environment:
+      PROOFPAY_PUBLIC_URL: https://proof.an8kk.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mcp:
+    image: proofpay-backend:latest
+    command: proofpay-mcp
+    restart: unless-stopped
+    env_file:
+      - path: ${PROOFPAY_ENV_FILE:-/etc/proofpay/env}
+        required: true
+    environment:
+      PROOFPAY_PUBLIC_URL: https://proof.an8kk.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    ports:
+      - "127.0.0.1:8530:80"
+    depends_on:
+      - api
+      - mcp
+
+volumes:
+  pgdata:
