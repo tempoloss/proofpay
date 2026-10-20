@@ -29,9 +29,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from proofpay.app import create_app
+from proofpay.integrations.providers import IntegrationsProvider
 from proofpay.modules.registry import MODULES, all_providers
 from proofpay.settings import Settings
 from proofpay.shared.di import InfraProvider, SessionProvider
+from tests.fakes import FakeServices, FakeServicesProvider, Flow
 
 if TYPE_CHECKING:
     from dishka import AsyncContainer
@@ -165,21 +167,36 @@ async def clean_database(engine: AsyncEngine) -> AsyncIterator[None]:
 
 
 @pytest.fixture
-async def container(clean_database: None) -> AsyncIterator[AsyncContainer]:
-    """Application container built from the production provider set.
+def services() -> FakeServices:
+    """The fake external services of one test."""
+    return FakeServices()
 
-    Tests that need fake external services append their own provider last:
-    the container takes the last registered implementation, so everything
-    else stays real.
+
+@pytest.fixture
+async def container(
+    clean_database: None, services: FakeServices
+) -> AsyncIterator[AsyncContainer]:
+    """Application container: the production provider set, fakes last.
+
+    The container takes the last registered implementation of a port, so the
+    external services are fakes while everything else stays real.
     """
     built = make_async_container(
         InfraProvider(),
         SessionProvider(),
+        IntegrationsProvider(),
         LitestarProvider(),
         *all_providers(),
+        FakeServicesProvider(services),
     )
     yield built
     await built.close()
+
+
+@pytest.fixture
+def flow(container: AsyncContainer, services: FakeServices) -> Flow:
+    """Scenario driver over the test container."""
+    return Flow(container, services)
 
 
 @pytest.fixture

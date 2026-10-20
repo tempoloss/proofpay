@@ -13,8 +13,9 @@ cd "$(git rev-parse --show-toplevel)"
 export LC_ALL=C.UTF-8
 
 # (*UTF) switches PCRE2 to UTF mode and (?i) folds case, so "Академия" and
-# "дпар" match regardless of the capitalisation.
-PATTERN='(*UTF)(?i)arlan|afm|академ|ДПАР|dpar|109\.199|84\.240'
+# "дпар" match regardless of the capitalisation. The short latin tokens must
+# not touch other letters: "noUnusedParameters" contains "dPar".
+PATTERN='(*UTF)(?i)arlan|(?<![a-z])afm(?![a-z])|академ|ДПАР|(?<![a-z])dpar(?![a-z])|109\.199|84\.240'
 
 # git grep exits 1 when nothing matches (the good outcome here) and above 1
 # on real errors, which must not be mistaken for "no leaks".

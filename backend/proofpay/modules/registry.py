@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 # Module package name -> database schema the module owns.
 # The schema is used by Alembic: it only manages schemas listed here.
-MODULES: Final[dict[str, str]] = {}
+MODULES: Final[dict[str, str]] = {"bounties": "bounty"}
 
 MODULE_NAMES: Final[tuple[str, ...]] = tuple(MODULES)
 

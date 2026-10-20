@@ -30,8 +30,7 @@ app = procrastinate.App(
         conninfo=_plain_dsn(Settings().database_url)
     ),
     # Task modules register their tasks on `app` as an import side effect.
-    # No module ships tasks yet; a later step lists their import paths here.
-    import_paths=[],
+    import_paths=["proofpay.modules.bounties.infrastructure.tasks"],
 )
 
 

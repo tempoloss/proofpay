@@ -135,3 +135,36 @@ name = "Shared code does not know about modules or integrations"
 type = "forbidden"
 source_modules = ["proofpay.shared"]
 forbidden_modules = ["proofpay.modules", "proofpay.integrations"]
+
+[[tool.importlinter.contracts]]
+id = "bounties-domain-pure"
+name = "The bounties domain depends on nothing above it"
+type = "forbidden"
+source_modules = ["proofpay.modules.bounties.domain"]
+forbidden_modules = [
+    "proofpay.modules.bounties.application",
+    "proofpay.modules.bounties.infrastructure",
+    "proofpay.modules.bounties.presentation",
+    "proofpay.integrations",
+]
+
+[[tool.importlinter.contracts]]
+id = "bounties-presentation-uses-application"
+name = "Bounties presentation reaches data only through the application layer"
+type = "forbidden"
+source_modules = ["proofpay.modules.bounties.presentation"]
+forbidden_modules = [
+    "proofpay.modules.bounties.domain",
+    "proofpay.modules.bounties.infrastructure",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+id = "bounties-application-no-adapters"
+name = "Bounties use cases do not import adapters or presentation"
+type = "forbidden"
+source_modules = ["proofpay.modules.bounties.application"]
+forbidden_modules = [
+    "proofpay.modules.bounties.infrastructure",
+    "proofpay.modules.bounties.presentation",
+]
