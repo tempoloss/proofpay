@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from proofpay.modules.bounties.domain.entities import (
@@ -21,6 +21,26 @@ from proofpay.modules.bounties.domain.entities import (
 )
 from proofpay.modules.bounties.domain.repositories import BountyRepository
 
+# The values of the domain enums as string literals: the HTTP schema and the
+# generated client are typed with them. mypy checks that they match the enums.
+type BountyStatusName = Literal[
+    "draft",
+    "awaiting_payment",
+    "funded",
+    "in_review",
+    "needs_human",
+    "released",
+    "paid",
+    "cancelled",
+    "expired",
+]
+type ClaimStatusName = Literal[
+    "open", "submitted", "rejected", "needs_human", "accepted"
+]
+type SolverKindName = Literal["human", "agent"]
+type OutcomeName = Literal["pass", "fail", "needs_human"]
+type CiName = Literal["green", "red", "pending"]
+
 
 @dataclass(frozen=True, slots=True)
 class CriterionView:
@@ -31,7 +51,7 @@ class CriterionView:
 @dataclass(frozen=True, slots=True)
 class VerdictItemView:
     criterion_id: str
-    state: str
+    state: Literal["met", "not_met", "unverified"]
     quote: str
     file: str
     reason: str
@@ -39,8 +59,8 @@ class VerdictItemView:
 
 @dataclass(frozen=True, slots=True)
 class VerdictView:
-    outcome: str
-    ci: str
+    outcome: OutcomeName
+    ci: CiName
     items: tuple[VerdictItemView, ...]
 
 
@@ -55,9 +75,9 @@ class EventView:
 class ClaimView:
     id: UUID
     solver_name: str
-    solver_kind: str
+    solver_kind: SolverKindName
     pr_url: str | None
-    status: str
+    status: ClaimStatusName
     verdict: VerdictView | None
     created_at: datetime
 
@@ -72,7 +92,7 @@ class BountyCard:
     title: str
     amount_usd: Decimal
     done_when: str
-    status: str
+    status: BountyStatusName
     criteria: tuple[CriterionView, ...]
     created_at: datetime
 
@@ -87,7 +107,7 @@ class BountyView:
     title: str
     amount_usd: Decimal
     done_when: str
-    status: str
+    status: BountyStatusName
     criteria: tuple[CriterionView, ...]
     created_at: datetime
     claims: tuple[ClaimView, ...]
@@ -99,7 +119,7 @@ class BountyView:
 class ClaimStatusView:
     claim_id: UUID
     bounty_id: UUID
-    status: str
+    status: ClaimStatusName
     verdict: VerdictView | None
     events: tuple[EventView, ...]
 
@@ -202,6 +222,10 @@ class BountyQueries:
             verdict=_verdict_view(verdict),
             events=tuple(_event_view(event) for event in events),
         )
+
+    async def claim_view(self, claim_id: UUID) -> ClaimView:
+        """One claim as the solver sees it: never with the payee's e-mail."""
+        return _claim_view(await self._repo.get_claim(claim_id))
 
     async def claim_status(self, claim_id: UUID) -> ClaimStatusView:
         """State of one claim, with the audit log of its bounty."""

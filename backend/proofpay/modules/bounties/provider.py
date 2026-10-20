@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 import procrastinate
 from dishka import Provider, Scope, provide
 
+from proofpay.modules.bounties.application.commands import BountyCommands
 from proofpay.modules.bounties.application.queries import BountyQueries
 from proofpay.modules.bounties.application.service import BountyService
 from proofpay.modules.bounties.domain.ports import JobQueue
@@ -27,6 +28,7 @@ class BountyProvider(Provider):
     repository = provide(SqlBountyRepository, provides=BountyRepository)
     service = provide(BountyService)
     queries = provide(BountyQueries)
+    commands = provide(BountyCommands)
 
     @provide(scope=Scope.APP)
     async def job_app(self, settings: Settings) -> AsyncIterator[procrastinate.App]:

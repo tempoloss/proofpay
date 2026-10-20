@@ -9,6 +9,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from litestar import Litestar
+from litestar.testing import AsyncTestClient
 
 from proofpay.integrations.github.ports import CheckRun
 from proofpay.integrations.paypal.ports import PayoutStatus
@@ -889,3 +891,21 @@ async def test_decide_when_nothing_awaits_a_decision_is_refused(
 
     assert refused.value.code == "NOT_AWAITING_DECISION"
     assert services.gateway.calls_of("capture") == []
+
+
+async def test_http_submit_of_a_pull_request_without_the_issue_reference_is_422(
+    flow: Flow, services: FakeServices, client: AsyncTestClient[Litestar]
+) -> None:
+    opened = await flow.funded()
+    claim = await flow.claim(opened)
+    services.code.pr_body = "Fixes #12"  # #12 is not issue #1
+
+    response = await client.post(
+        f"/api/v1/claims/{claim.id}/submit", json={"pr_url": PR_URL}
+    )
+
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["code"] == "PR_NOT_LINKED"
+    assert (await flow.page(opened.bounty.id)).status == "funded"
+    assert services.jobs.calls == []

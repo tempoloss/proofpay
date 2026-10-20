@@ -8,17 +8,20 @@ import structlog
 from dishka import FromDishka
 from dishka.integrations.litestar import inject, setup_dishka
 from litestar import Litestar, Request, Response, Router, get
-from litestar.exceptions import HTTPException
+from litestar.exceptions import HTTPException, ValidationException
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
-from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
+from litestar.status_codes import (
+    HTTP_422_UNPROCESSABLE_ENTITY,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from proofpay.di import build_container
 from proofpay.modules.registry import all_routers
 from proofpay.settings import Settings
-from proofpay.shared.errors import DomainError, problem_detail
+from proofpay.shared.errors import PROBLEM_TYPE_PREFIX, DomainError, problem_detail
 from proofpay.shared.logging import setup_logging
 
 if TYPE_CHECKING:
@@ -114,6 +117,25 @@ def http_exception_handler(
     )
 
 
+def validation_exception_handler(
+    request: Request[Any, Any, Any],
+    exc: ValidationException,
+) -> Response[dict[str, Any]]:
+    """A request that does not fit the schema: 422 with the offending fields."""
+    return Response(
+        content={
+            "type": f"{PROBLEM_TYPE_PREFIX}validation_error",
+            "title": "The request does not match the API schema",
+            "status": HTTP_422_UNPROCESSABLE_ENTITY,
+            "instance": request.url.path,
+            "code": "VALIDATION_ERROR",
+            "errors": exc.extra if isinstance(exc.extra, list) else [],
+        },
+        status_code=HTTP_422_UNPROCESSABLE_ENTITY,
+        media_type=PROBLEM_MEDIA_TYPE,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     container: AsyncContainer | None = None,
@@ -134,6 +156,7 @@ def create_app(
         exception_handlers={
             DomainError: domain_error_handler,
             HTTPException: http_exception_handler,
+            ValidationException: validation_exception_handler,
         },
         openapi_config=OpenAPIConfig(
             title="ProofPay API",
