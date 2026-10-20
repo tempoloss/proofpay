@@ -120,6 +120,7 @@ class ClaimStatusView:
     claim_id: UUID
     bounty_id: UUID
     status: ClaimStatusName
+    bounty_status: BountyStatusName
     verdict: VerdictView | None
     events: tuple[EventView, ...]
 
@@ -228,13 +229,15 @@ class BountyQueries:
         return _claim_view(await self._repo.get_claim(claim_id))
 
     async def claim_status(self, claim_id: UUID) -> ClaimStatusView:
-        """State of one claim, with the audit log of its bounty."""
+        """State of one claim, with the status and audit log of its bounty."""
         claim = await self._repo.get_claim(claim_id)
+        bounty = await self._repo.get(claim.bounty_id)
         events = await self._repo.events_of(claim.bounty_id)
         return ClaimStatusView(
             claim_id=claim.id,
             bounty_id=claim.bounty_id,
             status=claim.status.value,
+            bounty_status=bounty.status.value,
             verdict=_verdict_view(claim.verdict),
             events=tuple(_event_view(event) for event in events),
         )
