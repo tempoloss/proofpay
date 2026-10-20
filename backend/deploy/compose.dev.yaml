@@ -1,0 +1,27 @@
+# ProofPay dev environment: only PostgreSQL.
+# Start from the repository root:
+#   docker compose -f backend/deploy/compose.dev.yaml up -d
+# The host port is 5433 so that it does not clash with a local PostgreSQL
+# on the default 5432. Inside the compose network the address stays postgres:5432.
+
+name: proofpay-dev
+
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: proofpay
+      POSTGRES_PASSWORD: proofpay
+      POSTGRES_DB: proofpay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proofpay -d proofpay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
