@@ -42,6 +42,10 @@ jobs:
       - run: uv run lint-imports
       - run: uv run mypy proofpay
       - run: uv run pytest --cov=proofpay
+      - name: OpenAPI schema is up to date
+        run: |
+          uv run proofpay-cli openapi ../frontend/schema/openapi.json
+          git diff --exit-code -- ../frontend/schema/openapi.json
 
   frontend:
     runs-on: ubuntu-latest
@@ -54,7 +58,13 @@ jobs:
         with:
           node-version: "24"
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - name: Generated API client is up to date
+        run: |
+          bun run api:generate
+          git diff --exit-code -- src/shared/api
       - run: bun run check
       - run: bun run typecheck
       - run: bun run test

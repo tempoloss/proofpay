@@ -25,3 +25,7 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Tool caches
+.import_linter_cache/
+.tanstack/

@@ -66,6 +66,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8530:80"
     depends_on:

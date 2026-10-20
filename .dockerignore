@@ -1,0 +1,19 @@
+# Context for deploy/web.Dockerfile (repository root). The image needs only
+# frontend/ sources, frontend/package.json, frontend/bun.lock, deploy/nginx.conf.
+.git
+.omp
+.github
+backend/
+scripts/
+**/node_modules
+**/.venv
+**/__pycache__
+**/dist
+**/.tanstack
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/.import_linter_cache
+**/*.tsbuildinfo
+**/.env
+**/.env.*
