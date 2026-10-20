@@ -77,6 +77,7 @@ def _bounty(status: BountyStatus) -> Bounty:
         status=status,
         funder_key_hash="0" * 64,
         order_id=None,
+        order_attempt=0,
         auth_id=None,
         auth_expires_at=None,
         capture_id=None,

@@ -54,6 +54,7 @@ class BountyRow(Base):
     status: Mapped[str] = mapped_column(String(32), index=True)
     funder_key_hash: Mapped[str] = mapped_column(String(64))
     order_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    order_attempt: Mapped[int] = mapped_column(Integer, server_default="0")
     auth_id: Mapped[str | None] = mapped_column(String(64))
     auth_expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     capture_id: Mapped[str | None] = mapped_column(String(64))

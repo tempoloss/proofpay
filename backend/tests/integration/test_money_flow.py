@@ -11,6 +11,9 @@ from decimal import Decimal
 import pytest
 from litestar import Litestar
 from litestar.testing import AsyncTestClient
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from proofpay.integrations.github.ports import CheckRun
 from proofpay.integrations.paypal.ports import PayoutStatus
@@ -24,6 +27,7 @@ from proofpay.modules.bounties.domain.rules import MAX_DIFF_CHARS
 from proofpay.shared.errors import (
     ConflictError,
     ForbiddenError,
+    NotFoundError,
     UnprocessableError,
     UpstreamError,
 )
@@ -47,6 +51,24 @@ pytestmark = pytest.mark.integration
 
 PAYPAL_REJECTED = UpstreamError(code="PAYPAL_ERROR", detail="rejected")
 HALF_A_MINUTE = timedelta(seconds=30)
+ONE_CRITERION = [Criterion(id="c1", text="divide returns None on zero")]
+
+
+def _order_request_ids(services: FakeServices) -> list[str | None]:
+    return [call.request_id for call in services.gateway.calls_of("create_order")]
+
+
+async def _row_is_free(engine: AsyncEngine, bounty_id) -> bool:
+    """Whether another session can lock the bounty row right now."""
+    async with engine.connect() as connection:
+        try:
+            await connection.execute(
+                text("SELECT 1 FROM bounty.bounties WHERE id = :id FOR UPDATE NOWAIT"),
+                {"id": bounty_id},
+            )
+        except DBAPIError:
+            return False
+        return True
 
 
 async def _review(flow: Flow, claim_id) -> None:
@@ -731,12 +753,243 @@ async def test_abandoned_checkout_returns_to_draft_and_can_be_funded_again(
     assert (await flow.page(opened.bounty.id)).status == "draft"
 
     async with flow.service() as service:
-        await service.fund(
-            opened.bounty.id,
-            opened.key,
-            [Criterion(id="c1", text="divide returns None on zero")],
-        )
+        url = await service.fund(opened.bounty.id, opened.key, ONE_CRITERION)
+
     assert (await flow.page(opened.bounty.id)).status == "awaiting_payment"
+    assert url == f"https://paypal.test/approve/{opened.bounty.id}-2"
+    assert _order_request_ids(services) == [
+        f"order-{opened.bounty.id}",
+        f"order-{opened.bounty.id}-2",
+    ]
+
+
+async def test_a_repeated_fund_opens_a_new_checkout_under_a_new_request_id(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.awaiting_payment()
+    bounty_id = opened.bounty.id
+
+    async with flow.service() as service:
+        second = await service.fund(bounty_id, opened.key, ONE_CRITERION)
+    async with flow.service() as service:
+        third = await service.fund(bounty_id, opened.key, ONE_CRITERION)
+
+    assert second == f"https://paypal.test/approve/{bounty_id}-2"
+    assert third == f"https://paypal.test/approve/{bounty_id}-3"
+    assert _order_request_ids(services) == [
+        f"order-{bounty_id}",
+        f"order-{bounty_id}-2",
+        f"order-{bounty_id}-3",
+    ]
+    # Only the latest checkout is the bounty's: an earlier order finds nothing.
+    async with flow.service() as service:
+        with pytest.raises(NotFoundError):
+            await service.confirm_payment(f"ORDER-{bounty_id}-2")
+    async with flow.service() as service:
+        assert await service.confirm_payment(f"ORDER-{bounty_id}-3") == bounty_id
+    assert (await flow.page(bounty_id)).status == "funded"
+
+
+async def test_fund_retried_after_an_error_reuses_the_request_id(
+    flow: Flow, services: FakeServices
+) -> None:
+    created = await flow.draft()
+    bounty_id = created.bounty.id
+    services.gateway.fail["create_order"] = PAYPAL_REJECTED
+
+    for _ in range(2):
+        with pytest.raises(UpstreamError):
+            async with flow.service() as service:
+                await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+    assert (await flow.page(bounty_id)).status == "awaiting_payment"
+
+    del services.gateway.fail["create_order"]
+    async with flow.service() as service:
+        url = await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+    assert url == f"https://paypal.test/approve/{bounty_id}"
+    async with flow.service() as service:
+        await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+
+    assert _order_request_ids(services) == [
+        f"order-{bounty_id}",
+        f"order-{bounty_id}",
+        f"order-{bounty_id}",
+        f"order-{bounty_id}-2",
+    ]
+
+
+async def test_fund_holds_no_row_lock_while_paypal_creates_the_order(
+    flow: Flow, services: FakeServices, engine: AsyncEngine
+) -> None:
+    created = await flow.draft()
+    bounty_id = created.bounty.id
+    seen: list[tuple[bool, str]] = []
+
+    async def another_session() -> None:
+        status = (await flow.page(bounty_id)).status
+        seen.append((await _row_is_free(engine, bounty_id), status))
+
+    services.gateway.during["create_order"] = another_session
+    async with flow.service() as service:
+        await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+
+    assert seen == [(True, "awaiting_payment")]
+    assert (await flow.page(bounty_id)).status == "awaiting_payment"
+
+
+async def test_two_funds_racing_on_one_attempt_share_the_order(
+    flow: Flow, services: FakeServices
+) -> None:
+    created = await flow.draft()
+    bounty_id = created.bounty.id
+    inner: list[str] = []
+
+    async def another_request() -> None:
+        async with flow.service() as service:
+            inner.append(
+                await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+            )
+
+    services.gateway.during["create_order"] = another_request
+    async with flow.service() as service:
+        outer = await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+
+    assert inner == [outer] == [f"https://paypal.test/approve/{bounty_id}"]
+    assert _order_request_ids(services) == [f"order-{bounty_id}"] * 2
+    async with flow.service() as service:
+        assert await service.confirm_payment(f"ORDER-{bounty_id}") == bounty_id
+
+
+async def test_fund_fails_when_the_bounty_is_cancelled_while_the_order_is_created(
+    flow: Flow, services: FakeServices
+) -> None:
+    created = await flow.draft()
+    bounty_id = created.bounty.id
+
+    async def funder_cancels() -> None:
+        async with flow.service() as service:
+            await service.cancel(bounty_id, created.funder_key)
+
+    services.gateway.during["create_order"] = funder_cancels
+    with pytest.raises(ConflictError) as refused:
+        async with flow.service() as service:
+            await service.fund(bounty_id, created.funder_key, ONE_CRITERION)
+
+    assert refused.value.code == "INVALID_TRANSITION"
+    assert (await flow.page(bounty_id)).status == "cancelled"
+    async with flow.service() as service:
+        with pytest.raises(NotFoundError):
+            await service.confirm_payment(f"ORDER-{bounty_id}")
+
+
+async def test_confirm_payment_holds_no_row_lock_while_paypal_authorizes(
+    flow: Flow, services: FakeServices, engine: AsyncEngine
+) -> None:
+    opened = await flow.awaiting_payment()
+    bounty_id = opened.bounty.id
+    seen: list[tuple[bool, str]] = []
+
+    async def another_session() -> None:
+        status = (await flow.page(bounty_id)).status
+        seen.append((await _row_is_free(engine, bounty_id), status))
+
+    services.gateway.during["authorize"] = another_session
+    async with flow.service() as service:
+        assert await service.confirm_payment(f"ORDER-{bounty_id}") == bounty_id
+
+    assert seen == [(True, "awaiting_payment")]
+    assert (await flow.page(bounty_id)).status == "funded"
+
+
+async def test_two_confirmations_racing_fund_the_bounty_once(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.awaiting_payment()
+    bounty_id = opened.bounty.id
+    order = f"ORDER-{bounty_id}"
+
+    async def another_request() -> None:
+        async with flow.service() as service:
+            assert await service.confirm_payment(order) == bounty_id
+
+    services.gateway.during["authorize"] = another_request
+    async with flow.service() as service:
+        assert await service.confirm_payment(order) == bounty_id
+
+    authorizations = services.gateway.calls_of("authorize")
+    assert [call.request_id for call in authorizations] == [f"auth-{bounty_id}"] * 2
+    assert services.gateway.calls_of("void") == []
+    view = await flow.page(bounty_id)
+    assert view.status == "funded"
+    assert flow.kinds(view).count("funded") == 1
+
+
+async def test_a_checkout_cancelled_during_authorization_is_voided_and_not_funded(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.awaiting_payment()
+    bounty_id = opened.bounty.id
+    order = f"ORDER-{bounty_id}"
+
+    async def funder_backs_out() -> None:
+        async with flow.service() as service:
+            await service.cancel_payment(order)
+
+    services.gateway.during["authorize"] = funder_backs_out
+    with pytest.raises(ConflictError) as refused:
+        async with flow.service() as service:
+            await service.confirm_payment(order)
+
+    assert refused.value.code == "INVALID_TRANSITION"
+    (void,) = services.gateway.calls_of("void")
+    assert void.args["auth_id"] == f"AUTH-{order}"
+    assert void.request_id == f"void-{bounty_id}-AUTH-{order}"
+    view = await flow.page(bounty_id)
+    assert view.status == "draft"
+    assert "funded" not in flow.kinds(view)
+
+
+async def test_a_checkout_replaced_during_authorization_is_voided_and_not_funded(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.awaiting_payment()
+    bounty_id = opened.bounty.id
+
+    async def funder_starts_again() -> None:
+        async with flow.service() as service:
+            await service.fund(bounty_id, opened.key, ONE_CRITERION)
+
+    services.gateway.during["authorize"] = funder_starts_again
+    with pytest.raises(ConflictError):
+        async with flow.service() as service:
+            await service.confirm_payment(f"ORDER-{bounty_id}")
+
+    (void,) = services.gateway.calls_of("void")
+    assert void.args["auth_id"] == f"AUTH-ORDER-{bounty_id}"
+    assert (await flow.page(bounty_id)).status == "awaiting_payment"
+    async with flow.service() as service:
+        assert await service.confirm_payment(f"ORDER-{bounty_id}-2") == bounty_id
+    assert (await flow.page(bounty_id)).status == "funded"
+
+
+async def test_a_failed_orphan_void_is_logged_and_does_not_hide_the_conflict(
+    flow: Flow, services: FakeServices
+) -> None:
+    opened = await flow.awaiting_payment()
+    order = f"ORDER-{opened.bounty.id}"
+
+    async def funder_backs_out() -> None:
+        services.gateway.fail["void"] = PAYPAL_REJECTED
+        async with flow.service() as service:
+            await service.cancel_payment(order)
+
+    services.gateway.during["authorize"] = funder_backs_out
+    with pytest.raises(ConflictError):
+        async with flow.service() as service:
+            await service.confirm_payment(order)
+
+    assert len(services.gateway.calls_of("void")) == 1
+    assert (await flow.page(opened.bounty.id)).status == "draft"
 
 
 async def test_wrong_funder_key_on_fund_is_forbidden_and_changes_nothing(

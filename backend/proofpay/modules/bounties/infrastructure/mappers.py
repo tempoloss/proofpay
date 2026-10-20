@@ -82,6 +82,7 @@ def bounty_from_row(row: BountyRow) -> Bounty:
         status=BountyStatus(row.status),
         funder_key_hash=row.funder_key_hash,
         order_id=row.order_id,
+        order_attempt=row.order_attempt,
         auth_id=row.auth_id,
         auth_expires_at=row.auth_expires_at,
         capture_id=row.capture_id,
@@ -101,6 +102,7 @@ def apply_bounty(row: BountyRow, bounty: Bounty) -> None:
     row.status = bounty.status.value
     row.funder_key_hash = bounty.funder_key_hash
     row.order_id = bounty.order_id
+    row.order_attempt = bounty.order_attempt
     row.auth_id = bounty.auth_id
     row.auth_expires_at = bounty.auth_expires_at
     row.capture_id = bounty.capture_id

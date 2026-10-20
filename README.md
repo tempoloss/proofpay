@@ -107,14 +107,17 @@ All calls are in `backend/proofpay/integrations/paypal/client.py`, one long-live
 
 | Call | Request id |
 |---|---|
-| create order | `order-{bounty_id}` |
+| create order | `order-{bounty_id}`; each new checkout after a finished one: `order-{bounty_id}-{n}`, n = 2, 3, ... |
 | authorize | `auth-{bounty_id}` |
 | capture | `capture-{bounty_id}` |
 | void | `void-{bounty_id}` |
 | refund | `refund-{bounty_id}` |
 | payout | `payout-{claim_id}` (also `sender_batch_id`); after n dead batches `payout-{claim_id}-{n+1}` |
 
-A retry after a timeout, a crashed worker or a repeated job sends the same id. What PayPal does
+A retry after a timeout, a crashed worker or a repeated job sends the same id. A funder who asks
+for a new checkout gets a new id instead, because PayPal would replay the earlier order and its
+approve URL. A `fund` call that raised, or raced another one, reuses the id of the unfinished
+attempt. What PayPal does
 with it, from its documentation (checked 20 Oct 2026, not yet exercised against the sandbox):
 
 - **Orders v2 and Payments v2** (create, authorize, capture, void, refund): a call that repeats a
@@ -339,6 +342,11 @@ docker compose -f deploy/compose.prod.yaml up -d
   `SELECT ... FOR UPDATE` on the bounty row; the capture id and the payout batch id are committed
   right after each PayPal call; a bounty already `released` with a payout batch, or `paid`, returns
   without touching PayPal.
+- **Checkout without a lock held over PayPal.** `fund` and `confirm_payment` commit their intent
+  (`order_attempt` on the bounty), call PayPal with no row lock held, then lock again and apply
+  the result only if the bounty still awaits payment on that order. If the checkout was cancelled
+  or replaced in between, `fund` answers `409 INVALID_TRANSITION`, and `confirm_payment` voids
+  the authorization it just got (`void-{bounty_id}-{auth_id}`) and answers the same.
 - **Captured money always has a way out.** A payout PayPal reports dead (item `FAILED`,
   `RETURNED`, `BLOCKED`, `REFUNDED`, `REVERSED`, or batch `DENIED`, `CANCELED`) frees the claim of
   its batch and parks the bounty in `needs_human` (event `payout_failed`, `definitive: true`). The

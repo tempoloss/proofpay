@@ -11,8 +11,13 @@ itself. Rules the methods keep, because they move money:
   so its result is never lost;
 - a job is deferred only after the commit it depends on;
 - the PayPal request ids are derived from the bounty or claim id, so a repeated
-  call after an ambiguous failure replays instead of acting twice; only a
-  payout PayPal reported dead moves to a new id (`payout-<claim>-2`, ...).
+  call after an ambiguous failure replays instead of acting twice; a new id is
+  used only where PayPal would otherwise replay a finished request: a new
+  checkout (`order-<bounty>-2`, ...) and a payout PayPal reported dead
+  (`payout-<claim>-2`, ...);
+- no row lock is held across a call to PayPal that opens or authorizes a
+  checkout: the intent is committed first and the result is applied under a
+  fresh lock, only if the state is still the expected one.
 """
 
 import hmac
@@ -179,6 +184,7 @@ class BountyService:
             status=BountyStatus.DRAFT,
             funder_key_hash=hash_funder_key(funder_key),
             order_id=None,
+            order_attempt=0,
             auth_id=None,
             auth_expires_at=None,
             capture_id=None,
@@ -217,21 +223,53 @@ class BountyService:
     ) -> str:
         """Fix the criteria and open a PayPal checkout; returns its approve URL.
 
-        Calling it again while the bounty awaits payment opens a new checkout.
+        Calling it again while the bounty awaits payment (or after the funder
+        backed out of a checkout) opens a new checkout under a new request id.
+        Repeating a call that raised, or that raced another one, reuses the id
+        of the unfinished attempt, so PayPal answers with the same order.
+
+        Three steps, so no row lock is held while PayPal is called: record the
+        attempt and commit; create the order; lock again and store the order
+        only if the bounty still awaits payment on that same attempt.
         """
         bounty = await self._repo.get_for_update(bounty_id)
         self._check_key(bounty, key)
         items = self._check_criteria(criteria)
         if bounty.status is not BountyStatus.AWAITING_PAYMENT:
             bounty = transition(bounty, BountyStatus.AWAITING_PAYMENT)
+        # An order that was stored belongs to a finished attempt: the next
+        # checkout is a new one. Without an order the attempt is still open.
+        finished = bounty.order_id is not None or bounty.order_attempt == 0
+        attempt = bounty.order_attempt + 1 if finished else bounty.order_attempt
+        await self._repo.save(
+            replace(bounty, criteria=items, order_id=None, order_attempt=attempt)
+        )
+        await self._session.commit()
+
         order = await self._gateway.create_order(
             bounty.amount,
             reference_id=str(bounty.id),
             return_url=f"{self._settings.public_url}/paypal/return",
             cancel_url=f"{self._settings.public_url}/paypal/cancel",
-            request_id=f"order-{bounty.id}",
+            request_id=_order_request_id(bounty.id, attempt),
         )
-        await self._repo.save(replace(bounty, criteria=items, order_id=order.order_id))
+
+        current = await self._repo.get_for_update(bounty_id)
+        if (
+            current.status is not BountyStatus.AWAITING_PAYMENT
+            or current.order_attempt != attempt
+            or current.order_id not in {None, order.order_id}
+        ):
+            raise ConflictError(
+                code="INVALID_TRANSITION",
+                detail="the bounty changed while the checkout was being opened",
+                params={
+                    "from": current.status.value,
+                    "to": BountyStatus.AWAITING_PAYMENT.value,
+                },
+            )
+        if current.order_id is None:
+            await self._repo.save(replace(current, order_id=order.order_id))
         await self._session.commit()
         return order.approve_url
 
@@ -239,29 +277,70 @@ class BountyService:
         """The funder approved the order: authorize it and open the bounty.
 
         A repeated call for a bounty that is no longer awaiting payment does
-        nothing.
+        nothing. The row is not locked while PayPal authorizes: the bounty is
+        locked again afterwards and funded only if it still awaits payment on
+        this order. If the checkout was cancelled or replaced meanwhile, the
+        new authorization is voided and the call fails with a conflict.
         """
         bounty = await self._repo.get_by_order_for_update(order_id)
         if bounty.status is not BountyStatus.AWAITING_PAYMENT:
             return bounty.id
-        authorization = await self._gateway.authorize(
-            order_id, request_id=f"auth-{bounty.id}"
-        )
-        bounty = transition(bounty, BountyStatus.FUNDED)
-        await self._repo.save(
-            replace(
-                bounty,
-                auth_id=authorization.auth_id,
-                auth_expires_at=authorization.expires_at,
-            )
-        )
-        await self._event(
-            bounty.id,
-            EventKind.FUNDED,
-            auth_expires_at=authorization.expires_at.isoformat(),
-        )
+        bounty_id = bounty.id
         await self._session.commit()
-        return bounty.id
+
+        authorization = await self._gateway.authorize(
+            order_id, request_id=f"auth-{bounty_id}"
+        )
+
+        current = await self._repo.get_for_update(bounty_id)
+        if (
+            current.order_id == order_id
+            and current.status is BountyStatus.AWAITING_PAYMENT
+        ):
+            current = transition(current, BountyStatus.FUNDED)
+            await self._repo.save(
+                replace(
+                    current,
+                    auth_id=authorization.auth_id,
+                    auth_expires_at=authorization.expires_at,
+                )
+            )
+            await self._event(
+                bounty_id,
+                EventKind.FUNDED,
+                auth_expires_at=authorization.expires_at.isoformat(),
+            )
+            await self._session.commit()
+            return bounty_id
+        if current.order_id == order_id and current.auth_id == authorization.auth_id:
+            return bounty_id  # a concurrent call funded it with this authorization
+        await self._session.rollback()
+        await self._void_orphan(bounty_id, authorization.auth_id)
+        raise ConflictError(
+            code="INVALID_TRANSITION",
+            detail="the bounty changed while the payment was being authorized",
+            params={
+                "from": current.status.value,
+                "to": BountyStatus.FUNDED.value,
+            },
+        )
+
+    async def _void_orphan(self, bounty_id: UUID, auth_id: str) -> None:
+        """Release an authorization that no bounty claims; never raises.
+
+        Its request id carries the authorization id: `void-<bounty>` belongs
+        to the authorization the bounty keeps.
+        """
+        log.warning("authorization_orphaned", bounty_id=str(bounty_id), auth_id=auth_id)
+        try:
+            await self._gateway.void(auth_id, request_id=f"void-{bounty_id}-{auth_id}")
+        except Exception as exc:
+            log.warning(
+                "orphan_void_failed",
+                bounty_id=str(bounty_id),
+                auth_id=auth_id,
+                error=repr(exc),
+            )
 
     async def cancel_payment(self, order_id: str) -> UUID:
         """The funder abandoned the checkout: back to draft. Otherwise a no-op."""
@@ -868,6 +947,15 @@ class BountyService:
                 ),
             )
         return items
+
+
+def _order_request_id(bounty_id: UUID, attempt: int) -> str:
+    """Request id of checkout attempt `attempt` (1, 2, ...) of a bounty.
+
+    The first is `order-<bounty>`. PayPal replays a finished request for a
+    repeated id, so every new checkout needs its own number.
+    """
+    return f"order-{bounty_id}" if attempt == 1 else f"order-{bounty_id}-{attempt}"
 
 
 def _links_issue(body: str, number: int) -> bool:

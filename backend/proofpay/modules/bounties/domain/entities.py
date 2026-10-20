@@ -124,6 +124,7 @@ class Bounty:
     status: BountyStatus
     funder_key_hash: str
     order_id: str | None
+    order_attempt: int  # checkouts begun so far; numbers the PayPal request id
     auth_id: str | None
     auth_expires_at: datetime | None
     capture_id: str | None

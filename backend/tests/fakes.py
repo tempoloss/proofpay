@@ -8,6 +8,7 @@ Every fake records its calls so a test can state exactly what was sent where,
 and the money tests lean on that: how many captures, which request ids.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -157,11 +158,18 @@ class FakeClock:
 
 
 class FakePaymentGateway:
-    """Records every call; PayPal failures are injected per method."""
+    """Records every call; PayPal failures are injected per method.
+
+    Like PayPal, `create_order` answers a repeated request id with the order
+    of the first call, and a new request id with a new order.
+    """
 
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self.fail: dict[str, Exception] = {}
+        # Runs once, while the next call of that method is in flight: the way
+        # a test acts as "another request" between PayPal's receipt and answer.
+        self.during: dict[str, Callable[[], Awaitable[None]]] = {}
         self.payout_statuses = [
             PayoutStatus(batch_status="SUCCESS", item_status="SUCCESS")
         ]
@@ -172,10 +180,12 @@ class FakePaymentGateway:
     def calls_of(self, method: str) -> list[Call]:
         return [call for call in self.calls if call.method == method]
 
-    def _record(self, method: str, request_id: str | None, **args: Any) -> None:
+    async def _record(self, method: str, request_id: str | None, **args: Any) -> None:
         self.calls.append(Call(method, request_id, args))
         if method in self.fail:
             raise self.fail[method]
+        if method in self.during:
+            await self.during.pop(method)()
 
     async def create_order(
         self,
@@ -186,7 +196,7 @@ class FakePaymentGateway:
         *,
         request_id: str,
     ) -> CreatedOrder:
-        self._record(
+        await self._record(
             "create_order",
             request_id,
             amount=amount,
@@ -194,26 +204,28 @@ class FakePaymentGateway:
             return_url=return_url,
             cancel_url=cancel_url,
         )
+        # `order-<bounty>` is attempt 1, `order-<bounty>-2` attempt 2, ...
+        order = request_id.removeprefix("order-")
         return CreatedOrder(
-            order_id=f"ORDER-{reference_id}",
-            approve_url=f"https://paypal.test/approve/{reference_id}",
+            order_id=f"ORDER-{order}",
+            approve_url=f"https://paypal.test/approve/{order}",
         )
 
     async def authorize(self, order_id: str, *, request_id: str) -> Authorization:
-        self._record("authorize", request_id, order_id=order_id)
+        await self._record("authorize", request_id, order_id=order_id)
         return Authorization(
             auth_id=f"AUTH-{order_id}", expires_at=self.auth_expires_at
         )
 
     async def capture(self, auth_id: str, *, request_id: str) -> str:
-        self._record("capture", request_id, auth_id=auth_id)
+        await self._record("capture", request_id, auth_id=auth_id)
         return f"CAPTURE-{auth_id}"
 
     async def void(self, auth_id: str, *, request_id: str) -> None:
-        self._record("void", request_id, auth_id=auth_id)
+        await self._record("void", request_id, auth_id=auth_id)
 
     async def refund(self, capture_id: str, *, request_id: str) -> str:
-        self._record("refund", request_id, capture_id=capture_id)
+        await self._record("refund", request_id, capture_id=capture_id)
         return f"REFUND-{capture_id}"
 
     async def payout(
@@ -225,7 +237,7 @@ class FakePaymentGateway:
         *,
         request_id: str,
     ) -> str:
-        self._record(
+        await self._record(
             "payout",
             request_id,
             email=email,
@@ -236,7 +248,7 @@ class FakePaymentGateway:
         return f"BATCH-{sender_batch_id}"
 
     async def payout_status(self, batch_id: str) -> PayoutStatus:
-        self._record("payout_status", None, batch_id=batch_id)
+        await self._record("payout_status", None, batch_id=batch_id)
         if batch_id in self.batch_statuses:
             return self.batch_statuses[batch_id]
         if len(self.payout_statuses) > 1:
